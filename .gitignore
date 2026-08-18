@@ -1,0 +1,43 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+\# Node/React Frontend
+ai-trainer-web/node_modules/
+ai-trainer-web/dist/
+ai-trainer-web/.env
+ai-trainer-web/.env.local
+
+# FastAPI Python Backend
+__pycache__/
+*.pyc
+.env
+.venv/
+venv/
+env/
+.pytest_cache/
+
+# Operating System files
+.DS_Store
+Thumbs.db
