@@ -21,91 +21,131 @@ export default function LoginRegister({ onAuthSuccess }) {
         onAuthSuccess(data.access_token);
       } else {
         await api.register(email, password);
-        setMessage("REGISTRATION SUCCESSFUL! SWITCHING TO LOGIN...");
+        setMessage("REGISTRATION SUCCESSFUL! SIGN IN WITH YOUR NEW CREDENTIALS.");
         setIsLogin(true);
         setPassword("");
       }
     } catch (err) {
-      setError(err.message || "AN UNEXPECTED ERROR OCCURRED");
+      setError(err.message || "AN UNEXPECTED AUTHENTICATION ERROR OCCURRED");
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen w-full bg-black flex items-center justify-center p-4 relative overflow-hidden">
-      {/* Premium Athletic Blue Ambient Glow */}
-      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[500px] h-[500px] bg-blue-600/10 blur-[150px] rounded-full pointer-events-none"></div>
+    <div className="min-h-screen w-full bg-black flex items-center justify-center p-4 sm:p-6 relative overflow-hidden font-sans select-none">
+      {/* Athletic Blue & Cyan Ambient Glows */}
+      <div className="absolute -top-32 -left-32 w-96 h-96 bg-blue-600/15 blur-[140px] rounded-full pointer-events-none"></div>
+      <div className="absolute -bottom-32 -right-32 w-96 h-96 bg-cyan-400/15 blur-[140px] rounded-full pointer-events-none"></div>
+      <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] bg-blue-700/5 blur-[180px] rounded-full pointer-events-none"></div>
 
-      <div className="w-full max-w-md bg-[#0a0a0c] border border-slate-900 rounded-3xl p-8 shadow-[0_0_50px_rgba(0,82,255,0.15)] relative z-10">
-        <div className="text-center mb-10">
-          <span className="text-[10px] font-black tracking-[0.2em] text-cyan-400 bg-cyan-950/50 px-4 py-1.5 rounded-full border border-cyan-800/50 uppercase">
-            AuraTrainer Engine
-          </span>
-          <h1 className="text-4xl font-black italic tracking-tighter text-white mt-6 uppercase leading-none">
-            {isLogin ? "READY TO\nPUSH?" : "JOIN THE\nCLUB."}
+      {/* Main Glass/Charcoal Card */}
+      <div className="w-full max-w-md bg-[#0a0a0c] border border-[#1a1a24] rounded-3xl p-8 sm:p-10 shadow-[0_0_60px_rgba(0,82,255,0.12)] relative z-10">
+        
+        {/* Athletic Badge & Title */}
+        <div className="text-center mb-8">
+          <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-cyan-950/40 border border-cyan-500/30 text-cyan-400 text-[10px] font-black tracking-[0.25em] uppercase shadow-[0_0_12px_rgba(0,240,255,0.15)]">
+            <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping"></span>
+            AURATRAINER // PROTOCOL
+          </div>
+          
+          <h1 className="text-4xl sm:text-5xl font-black italic tracking-tighter text-white mt-5 uppercase leading-none">
+            {isLogin ? (
+              <>
+                READY TO <br />
+                <span className="text-transparent bg-clip-text bg-gradient-to-r from-[#0052FF] via-cyan-400 to-[#00F0FF]">
+                  PUSH?
+                </span>
+              </>
+            ) : (
+              <>
+                JOIN THE <br />
+                <span className="text-transparent bg-clip-text bg-gradient-to-r from-[#0052FF] via-cyan-400 to-[#00F0FF]">
+                  ELITE CLUB.
+                </span>
+              </>
+            )}
           </h1>
-          <p className="text-slate-500 mt-3 text-xs font-medium uppercase tracking-wider">
-            {isLogin ? "Enter details to access your daily stats" : "Begin your personalized training journey"}
+          
+          <p className="text-slate-500 mt-3 text-xs font-semibold uppercase tracking-wider">
+            {isLogin
+              ? "AUTHENTICATE TO ACCESS YOUR TRAINING PROTOCOLS"
+              : "INITIALIZE YOUR PERFORMANCE DATA PIPELINE"}
           </p>
         </div>
 
+        {/* Alerts */}
         {error && (
-          <div className="mb-6 p-4 bg-red-950/30 border-l-4 border-red-500 text-red-200 text-xs font-bold tracking-wide rounded-r-lg uppercase">
+          <div className="mb-6 p-4 bg-red-950/30 border-l-4 border-red-500 text-red-300 text-xs font-bold tracking-wide rounded-r-xl uppercase">
             {error}
           </div>
         )}
 
         {message && (
-          <div className="mb-6 p-4 bg-blue-950/30 border-l-4 border-cyan-400 text-cyan-200 text-xs font-bold tracking-wide rounded-r-lg uppercase">
+          <div className="mb-6 p-4 bg-cyan-950/30 border-l-4 border-cyan-400 text-cyan-200 text-xs font-bold tracking-wide rounded-r-xl uppercase">
             {message}
           </div>
         )}
 
-        <form onSubmit={handleSubmit} className="space-y-6">
+        {/* Auth Form */}
+        <form onSubmit={handleSubmit} className="space-y-5">
           <div>
-            <label className="block text-slate-400 text-xs font-bold tracking-widest uppercase mb-2">Email Address</label>
+            <label className="block text-slate-400 text-[10px] font-black tracking-[0.2em] uppercase mb-2">
+              ATHLETE EMAIL
+            </label>
             <input
               type="email"
               required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="w-full px-5 py-4 bg-black border border-slate-800 rounded-2xl text-slate-100 placeholder-slate-700 font-medium focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all text-sm"
-              placeholder="YOUR@EMAIL.COM"
+              className="w-full px-5 py-4 bg-black border border-slate-900 rounded-2xl text-slate-100 placeholder-slate-700 font-medium focus:outline-none focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400 transition-all text-sm uppercase tracking-wide"
+              placeholder="ATHLETE@AURATRAINER.COM"
             />
           </div>
 
           <div>
-            <label className="block text-slate-400 text-xs font-bold tracking-widest uppercase mb-2">Password</label>
+            <label className="block text-slate-400 text-[10px] font-black tracking-[0.2em] uppercase mb-2">
+              SECRET PASSCODE
+            </label>
             <input
               type="password"
               required
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-5 py-4 bg-black border border-slate-800 rounded-2xl text-slate-100 placeholder-slate-700 font-medium focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all text-sm"
-              placeholder="••••••••"
+              className="w-full px-5 py-4 bg-black border border-slate-900 rounded-2xl text-slate-100 placeholder-slate-700 font-medium focus:outline-none focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400 transition-all text-sm"
+              placeholder="••••••••••••"
             />
           </div>
 
           <button
             type="submit"
             disabled={loading}
-            className="w-full py-4 bg-gradient-to-r from-blue-600 to-cyan-500 hover:from-blue-500 hover:to-cyan-400 text-black font-black text-xs tracking-widest uppercase rounded-2xl transition duration-300 transform active:scale-[0.98] disabled:opacity-50 shadow-[0_4px_20px_rgba(0,240,255,0.25)]"
+            className="w-full py-4 mt-2 bg-gradient-to-r from-[#0052FF] to-[#00F0FF] hover:from-blue-500 hover:to-cyan-300 text-black font-black text-xs tracking-[0.25em] uppercase rounded-2xl transition duration-300 transform active:scale-[0.98] disabled:opacity-50 shadow-[0_0_25px_rgba(0,240,255,0.3)] flex items-center justify-center gap-2 cursor-pointer"
           >
-            {loading ? "PROCESSING..." : isLogin ? "SIGN IN →" : "CREATE ACCOUNT →"}
+            {loading ? (
+              <span className="animate-pulse">AUTHENTICATING...</span>
+            ) : isLogin ? (
+              <span>SIGN IN TO CONSOLE →</span>
+            ) : (
+              <span>CREATE ATHLETE PROFILE →</span>
+            )}
           </button>
         </form>
 
-        <div className="mt-8 text-center">
+        {/* Toggle Mode */}
+        <div className="mt-8 pt-6 border-t border-slate-900 text-center">
           <button
+            type="button"
             onClick={() => {
               setIsLogin(!isLogin);
               setError("");
               setMessage("");
             }}
-            className="text-xs font-bold uppercase tracking-widest text-cyan-400 hover:text-cyan-300 transition-colors"
+            className="text-xs font-black uppercase tracking-widest text-cyan-400 hover:text-cyan-300 transition-colors"
           >
-            {isLogin ? "NEW USER? CREATE A PROFILE" : "ALREADY REGISTERED? LOG IN"}
+            {isLogin
+              ? "NEW ATHLETE? INITIALIZE PROFILE →"
+              : "EXISTING ATHLETE? LOG IN →"}
           </button>
         </div>
       </div>
