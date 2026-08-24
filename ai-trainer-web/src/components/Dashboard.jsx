@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { api } from "../services/api";
+import AchievementsModal from "./AchievementsModal";
+import CustomSplitEditor from "./CustomSplitEditor";
 
 export default function Dashboard() {
   // Today's Date in ISO format (YYYY-MM-DD)
@@ -24,10 +26,24 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   
-  // Split selection & Exercises list
+  // Split selection & Exercises list (Module 2)
   const [selectedSplit, setSelectedSplit] = useState("PUSH DAY");
   const [splitExercises, setSplitExercises] = useState([]);
   const [exercisesLoading, setExercisesLoading] = useState(false);
+  const [progressionTargets, setProgressionTargets] = useState({});
+  const [customSplits, setCustomSplits] = useState({});
+  const [showSplitEditor, setShowSplitEditor] = useState(false);
+
+  // Gamification & Badges (Module 3)
+  const [badges, setBadges] = useState([]);
+  const [showAchievements, setShowAchievements] = useState(false);
+  const [newlyUnlockedBadge, setNewlyUnlockedBadge] = useState(null);
+
+  // Saved Meals & Natural Language Food Logging (Module 1)
+  const [savedMeals, setSavedMeals] = useState([]);
+  const [nlFoodInput, setNlFoodInput] = useState("");
+  const [nlParsedResult, setNlParsedResult] = useState(null);
+  const [nlLoading, setNlLoading] = useState(false);
 
   // Meal modal & form state
   const [showMealModal, setShowMealModal] = useState(false);
@@ -38,10 +54,18 @@ export default function Dashboard() {
   const [mealFat, setMealFat] = useState("");
   const [mealSubmitting, setMealSubmitting] = useState(false);
 
-  // AI Tactical Assistant state
+  // AI Tab State & Pantry Full-Day Planner (Module 4)
+  const [activeAiTab, setActiveAiTab] = useState("STRATEGIST"); // 'STRATEGIST' | 'PANTRY'
   const [aiPrompt, setAiPrompt] = useState("");
   const [aiResponse, setAiResponse] = useState(null);
   const [aiLoading, setAiLoading] = useState(false);
+
+  // Pantry Planner State
+  const [pantryIngredients, setPantryIngredients] = useState(["Chicken Breast", "Eggs", "Jasmine Rice", "Oats", "Spinach"]);
+  const [newIngredientTag, setNewIngredientTag] = useState("");
+  const [mealCount, setMealCount] = useState(3);
+  const [pantryPlan, setPantryPlan] = useState(null);
+  const [pantryLoading, setPantryLoading] = useState(false);
 
   // --- DATA LOADING & SYNCING ---
   const loadDashboardData = useCallback(async (targetDate) => {
@@ -52,13 +76,25 @@ export default function Dashboard() {
       const profileData = await api.getProfile();
       setProfile(profileData);
 
-      // 2. Fetch or auto-initialize database logs for selected date
+      // 2. Fetch daily logs
       const logData = await api.getDailyLog(targetDate);
       setLog(logData);
       
       if (logData.workout_split) {
         setSelectedSplit(logData.workout_split);
       }
+
+      // 3. Load Saved Meals & Badges & Custom Splits
+      const [savedMealsData, badgesData, customSplitsData] = await Promise.allSettled([
+        api.getSavedMeals(),
+        api.getBadges(),
+        api.getCustomSplits(),
+      ]);
+
+      if (savedMealsData.status === "fulfilled") setSavedMeals(savedMealsData.value || []);
+      if (badgesData.status === "fulfilled") setBadges(badgesData.value || []);
+      if (customSplitsData.status === "fulfilled") setCustomSplits(customSplitsData.value || {});
+
     } catch (err) {
       console.error("Dashboard sync error:", err);
       setError("FAILED TO SYNCHRONIZE ATHLETIC CONSOLE PORTAL.");
@@ -71,13 +107,33 @@ export default function Dashboard() {
     loadDashboardData(date);
   }, [date, loadDashboardData]);
 
-  // Load exercises when selectedSplit changes
+  // Load exercises and progressive overload targets when selectedSplit changes
   useEffect(() => {
-    const loadExercises = async () => {
+    const loadExercisesAndProgression = async () => {
       setExercisesLoading(true);
       try {
         const exercises = await api.getWorkoutsBySplit(selectedSplit);
         setSplitExercises(exercises || []);
+
+        // Query Vector RAG for progressive overload targets for each exercise
+        if (exercises && exercises.length > 0) {
+          const targets = {};
+          await Promise.all(
+            exercises.map(async (ex) => {
+              try {
+                const targetInfo = await api.getProgressionTarget(ex.name);
+                targets[ex.name] = targetInfo;
+              } catch (e) {
+                targets[ex.name] = {
+                  progression_target_text: "🎯 AI Goal: Progressive Overload",
+                  target_weight: ex.weight,
+                  target_reps: ex.reps
+                };
+              }
+            })
+          );
+          setProgressionTargets(targets);
+        }
       } catch (err) {
         console.error("Failed to load workout split:", err);
         setSplitExercises([]);
@@ -86,7 +142,7 @@ export default function Dashboard() {
       }
     };
 
-    loadExercises();
+    loadExercisesAndProgression();
   }, [selectedSplit]);
 
   // --- SPLIT & EXERCISE INTERACTIONS ---
@@ -94,10 +150,11 @@ export default function Dashboard() {
     setSelectedSplit(splitName);
     try {
       setLog((prev) => ({ ...prev, workout_split: splitName }));
-      await api.updateTrackers({
+      const res = await api.updateTrackers({
         date: date,
         workout_split: splitName,
       });
+      checkBadgeUnlocks(res);
     } catch (err) {
       console.error("Failed to save workout split:", err);
     }
@@ -111,6 +168,18 @@ export default function Dashboard() {
       updatedCompleted = currentCompleted.filter((name) => name !== exerciseName);
     } else {
       updatedCompleted = [...currentCompleted, exerciseName];
+      
+      // Record milestone in Vector RAG Memory
+      const exObj = splitExercises.find((e) => e.name === exerciseName);
+      if (exObj) {
+        api.recordWorkoutPerformance({
+          exercise_name: exerciseName,
+          sets: exObj.sets || 3,
+          reps: String(exObj.reps || "10"),
+          weight: exObj.weight || "Standard",
+          date: date
+        }).catch((e) => console.log("Vector memory record error:", e));
+      }
     }
 
     // Auto-flag workout_completed if all exercises are done
@@ -125,13 +194,23 @@ export default function Dashboard() {
     }));
 
     try {
-      await api.updateTrackers({
+      const res = await api.updateTrackers({
         date: date,
         completed_exercises: updatedCompleted,
         workout_completed: allDone ? true : log.workout_completed,
       });
+      checkBadgeUnlocks(res);
     } catch (err) {
       console.error("Failed to update exercise completion:", err);
+    }
+  };
+
+  const checkBadgeUnlocks = (response) => {
+    if (response && response.newly_unlocked_badges && response.newly_unlocked_badges.length > 0) {
+      const newBadge = response.newly_unlocked_badges[0];
+      setNewlyUnlockedBadge(newBadge);
+      setShowAchievements(true);
+      api.getBadges().then((b) => setBadges(b || [])).catch(() => {});
     }
   };
 
@@ -141,17 +220,18 @@ export default function Dashboard() {
     try {
       setLog((prev) => ({ ...prev, [field]: newValue }));
       
-      await api.updateTrackers({
+      const res = await api.updateTrackers({
         date: date,
         [field]: newValue,
       });
+      checkBadgeUnlocks(res);
     } catch (err) {
       console.error("Failed to toggle metric:", err);
-      setLog((prev) => ({ ...prev, [field]: currentValue })); // Rollback on error
+      setLog((prev) => ({ ...prev, [field]: currentValue }));
     }
   };
 
-  // Quick incremental hydration update
+  // Hydration & Steps adjustments
   const handleWaterIncrement = async (amount) => {
     const currentWater = log.water_intake_ml || 0;
     const newWater = Math.max(0, currentWater + amount);
@@ -165,18 +245,18 @@ export default function Dashboard() {
         water_met: isMet
       }));
 
-      await api.updateTrackers({
+      const res = await api.updateTrackers({
         date: date,
         water_intake_ml: newWater,
         water_met: isMet,
       });
+      checkBadgeUnlocks(res);
     } catch (err) {
       console.error("Water tracker failed to save:", err);
       loadDashboardData(date);
     }
   };
 
-  // Step metric adjustment
   const handleStepsUpdate = async (amount) => {
     const currentSteps = log.steps || 0;
     const newSteps = Math.max(0, currentSteps + amount);
@@ -190,18 +270,19 @@ export default function Dashboard() {
         steps_met: isMet
       }));
 
-      await api.updateTrackers({
+      const res = await api.updateTrackers({
         date: date,
         steps: newSteps,
         steps_met: isMet,
       });
+      checkBadgeUnlocks(res);
     } catch (err) {
       console.error("Steps tracker failed to save:", err);
       loadDashboardData(date);
     }
   };
 
-  // Log a Meal (Manual payload submission)
+  // --- MEAL LOGGING & SAVED MEALS (MODULE 1) ---
   const handleLogMeal = async (e) => {
     e.preventDefault();
     if (!mealName || !mealCalories) return;
@@ -220,9 +301,9 @@ export default function Dashboard() {
     };
 
     try {
-      await api.logMeal(mealData);
+      const res = await api.logMeal(mealData);
+      checkBadgeUnlocks(res);
       
-      // Close modal, clean state, and reload
       setShowMealModal(false);
       setMealName("");
       setMealCalories("");
@@ -236,6 +317,102 @@ export default function Dashboard() {
       setError("FAILED TO LOG DIETARY PARAMETERS TO SQL.");
     } finally {
       setMealSubmitting(false);
+    }
+  };
+
+  // 1-Click Quick Log of Saved Meal
+  const handleQuickLogSavedMeal = async (savedMeal) => {
+    const loggedAtTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const mealPayload = {
+      date: date,
+      name: savedMeal.name,
+      calories: savedMeal.calories,
+      protein_g: savedMeal.protein_g,
+      carbs_g: savedMeal.carbs_g,
+      fat_g: savedMeal.fat_g,
+      logged_at: loggedAtTime,
+    };
+
+    try {
+      const res = await api.logMeal(mealPayload);
+      checkBadgeUnlocks(res);
+      await loadDashboardData(date);
+    } catch (err) {
+      console.error("Failed to log saved meal:", err);
+    }
+  };
+
+  const handleDeleteSavedMeal = async (mealId) => {
+    try {
+      await api.deleteSavedMeal(mealId);
+      setSavedMeals((prev) => prev.filter((m) => m.id !== mealId));
+    } catch (err) {
+      console.error("Failed to delete saved meal:", err);
+    }
+  };
+
+  // Natural Language Food Parsing
+  const handleParseNlFood = async (e) => {
+    e.preventDefault();
+    if (!nlFoodInput.trim()) return;
+
+    setNlLoading(true);
+    setNlParsedResult(null);
+
+    try {
+      const res = await api.parseFood(nlFoodInput);
+      setNlParsedResult(res);
+    } catch (err) {
+      console.error("NL Food parse error:", err);
+      setError("AI FOOD PARSER COULD NOT INTERPRET INPUT.");
+    } finally {
+      setNlLoading(false);
+    }
+  };
+
+  const handleCommitParsedMealToDaily = async () => {
+    if (!nlParsedResult) return;
+    const loggedAtTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const mealPayload = {
+      date: date,
+      name: `AI PARSED: ${nlParsedResult.inferred_name}`,
+      calories: nlParsedResult.macros.calories,
+      protein_g: nlParsedResult.macros.protein_g,
+      carbs_g: nlParsedResult.macros.carbs_g,
+      fat_g: nlParsedResult.macros.fat_g,
+      logged_at: loggedAtTime,
+    };
+
+    try {
+      const res = await api.logMeal(mealPayload);
+      checkBadgeUnlocks(res);
+      setNlParsedResult(null);
+      setNlFoodInput("");
+      await loadDashboardData(date);
+    } catch (err) {
+      console.error("Failed to log parsed meal:", err);
+    }
+  };
+
+  const handleSaveParsedToCustom = async () => {
+    if (!nlParsedResult) return;
+    const customName = prompt("ENTER A NAME FOR THIS SAVED MEAL TEMPLATE:", nlParsedResult.inferred_name);
+    if (!customName) return;
+
+    try {
+      const res = await api.saveMeal({
+        name: customName,
+        calories: nlParsedResult.macros.calories,
+        protein_g: nlParsedResult.macros.protein_g,
+        carbs_g: nlParsedResult.macros.carbs_g,
+        fat_g: nlParsedResult.macros.fat_g,
+      });
+      if (res && res.meal) {
+        setSavedMeals((prev) => [res.meal, ...prev]);
+      }
+      alert("MEAL TEMPLATE SAVED TO SAVED MEALS!");
+    } catch (err) {
+      console.error("Failed to save meal template:", err);
     }
   };
 
@@ -265,7 +442,6 @@ export default function Dashboard() {
 
   const consumed = calculateConsumed();
 
-  // Target values derived from profiles
   const targetCalories = profile?.target_calories || 2000;
   const targetProtein = profile?.target_protein_g || 150;
   const targetCarbs = profile?.target_carbs_g || 200;
@@ -273,13 +449,11 @@ export default function Dashboard() {
   const targetWater = profile?.target_water_ml || 3000;
   const targetSteps = profile?.target_steps || 10000;
 
-  // Remaining macros
   const remainingCalories = Math.max(0, targetCalories - consumed.calories);
   const remainingProtein = Math.max(0, targetProtein - consumed.protein);
   const remainingCarbs = Math.max(0, targetCarbs - consumed.carbs);
   const remainingFat = Math.max(0, targetFat - consumed.fat);
 
-  // Percentage mappings
   const caloriePercent = Math.min(100, (consumed.calories / targetCalories) * 100);
   const proteinPercent = Math.min(100, (consumed.protein / targetProtein) * 100);
   const carbsPercent = Math.min(100, (consumed.carbs / targetCarbs) * 100);
@@ -287,7 +461,7 @@ export default function Dashboard() {
   const waterPercent = Math.min(100, ((log.water_intake_ml || 0) / targetWater) * 100);
   const stepsPercent = Math.min(100, ((log.steps || 0) / targetSteps) * 100);
 
-  // AI Diet Recommendation inquiry connected to FastAPI backend
+  // Legacy AI Diet Recommendation inquiry
   const handleAiInquiry = async (e) => {
     e.preventDefault();
     setAiLoading(true);
@@ -310,11 +484,9 @@ export default function Dashboard() {
     }
   };
 
-  // Direct append of AI suggestion into daily logs
   const handleAddAiMealToLog = async () => {
     if (!aiResponse) return;
     const loggedAtTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-
     const mealPayload = {
       date: date,
       name: `AI REC: ${aiResponse.name.toUpperCase()}`,
@@ -326,13 +498,74 @@ export default function Dashboard() {
     };
 
     try {
-      await api.logMeal(mealPayload);
+      const res = await api.logMeal(mealPayload);
+      checkBadgeUnlocks(res);
       setAiResponse(null);
       setAiPrompt("");
       await loadDashboardData(date);
     } catch (err) {
       console.error("Failed to append AI meal:", err);
-      setError("FAILED TO COMMIT AI MEAL TO DAILY LOG.");
+    }
+  };
+
+  // --- PANTRY AI FULL-DAY MEAL PLANNER (MODULE 4) ---
+  const handleAddIngredientTag = () => {
+    if (!newIngredientTag.trim()) return;
+    const tag = newIngredientTag.trim();
+    if (!pantryIngredients.includes(tag)) {
+      setPantryIngredients([...pantryIngredients, tag]);
+    }
+    setNewIngredientTag("");
+  };
+
+  const handleRemoveIngredientTag = (tagToRemove) => {
+    setPantryIngredients(pantryIngredients.filter((t) => t !== tagToRemove));
+  };
+
+  const handleGeneratePantryPlan = async () => {
+    setPantryLoading(true);
+    setPantryPlan(null);
+
+    try {
+      const plan = await api.planPantryMeals({
+        ingredients: pantryIngredients,
+        target_calories: remainingCalories > 300 ? remainingCalories : targetCalories,
+        target_protein: remainingProtein > 20 ? remainingProtein : targetProtein,
+        target_carbs: remainingCarbs > 20 ? remainingCarbs : targetCarbs,
+        target_fat: remainingFat > 10 ? remainingFat : targetFat,
+        meal_count: mealCount,
+        body_type: profile?.body_type || "Mesomorph",
+        fitness_goals: profile?.fitness_goals || "Hypertrophy",
+      });
+      setPantryPlan(plan);
+    } catch (err) {
+      console.error("Pantry plan error:", err);
+      setError("PANTRY AI PROTOCOL FAILED TO COMPILE.");
+    } finally {
+      setPantryLoading(false);
+    }
+  };
+
+  const handleLogAllPantryMeals = async () => {
+    if (!pantryPlan || !pantryPlan.meals) return;
+    const loggedAtTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+    try {
+      for (const m of pantryPlan.meals) {
+        await api.logMeal({
+          date: date,
+          name: `PANTRY REC: ${m.name}`,
+          calories: m.calories,
+          protein_g: m.protein_g,
+          carbs_g: m.carbs_g,
+          fat_g: m.fat_g,
+          logged_at: loggedAtTime,
+        });
+      }
+      setPantryPlan(null);
+      await loadDashboardData(date);
+    } catch (err) {
+      console.error("Failed to batch log pantry meals:", err);
     }
   };
 
@@ -362,7 +595,7 @@ export default function Dashboard() {
 
   if (loading && !profile) {
     return (
-      <div className="min-h-screen bg-black flex flex-col items-center justify-center p-6 text-center">
+      <div className="min-h-screen bg-black flex flex-col items-center justify-center p-6 text-center select-none font-sans">
         <div className="w-14 h-14 border-4 border-slate-800 border-t-cyan-400 rounded-full animate-spin mb-4 shadow-[0_0_20px_rgba(0,240,255,0.3)]"></div>
         <div className="text-cyan-400 font-black tracking-[0.25em] text-xs uppercase animate-pulse">
           SYNCHRONIZING ATHLETIC COMBAT MATRIX...
@@ -371,15 +604,17 @@ export default function Dashboard() {
     );
   }
 
+  const unlockedBadgesCount = badges.filter((b) => b.unlocked).length;
+
   return (
-    <div className="min-h-screen w-full bg-black text-white relative overflow-x-hidden font-sans pb-20 select-none">
+    <div className="min-h-screen w-full bg-black text-white relative overflow-x-hidden font-sans pb-24 select-none">
       
       {/* Background Ambient Glows */}
-      <div className="absolute top-0 right-0 w-[600px] h-[600px] bg-blue-600/5 blur-[160px] rounded-full pointer-events-none z-0"></div>
-      <div className="absolute bottom-20 left-0 w-[600px] h-[600px] bg-cyan-400/5 blur-[160px] rounded-full pointer-events-none z-0"></div>
+      <div className="absolute top-0 right-0 w-[650px] h-[650px] bg-blue-600/5 blur-[170px] rounded-full pointer-events-none z-0"></div>
+      <div className="absolute bottom-20 left-0 w-[650px] h-[650px] bg-cyan-400/5 blur-[170px] rounded-full pointer-events-none z-0"></div>
 
       {/* HEADER SECTION */}
-      <header className="border-b border-[#14141c] bg-black/80 backdrop-blur-xl sticky top-0 z-40 px-6 py-4">
+      <header className="border-b border-[#14141c] bg-black/85 backdrop-blur-xl sticky top-0 z-40 px-6 py-4">
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div className="flex items-center gap-4">
             <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-[#0052FF] to-[#00F0FF] flex items-center justify-center font-black text-black text-xl italic tracking-tighter shadow-[0_0_20px_rgba(0,240,255,0.3)]">
@@ -388,7 +623,7 @@ export default function Dashboard() {
             <div>
               <div className="flex items-center gap-2">
                 <span className="text-[9px] font-black tracking-[0.25em] text-cyan-400 uppercase">
-                  AURATRAINER // MVP CONSOLE
+                  AURATRAINER // PHASE 2 MVP
                 </span>
                 <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping"></span>
               </div>
@@ -398,36 +633,51 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Date Selector Navigation */}
-          <div className="flex items-center bg-[#0a0a0c] border border-[#1a1a24] rounded-2xl px-3 py-2 self-start sm:self-auto shadow-inner">
+          {/* Header Action Controls */}
+          <div className="flex items-center gap-3 self-start sm:self-auto">
+            {/* Gamification Achievements Button */}
             <button
-              onClick={() => {
-                const prev = new Date(date);
-                prev.setDate(prev.getDate() - 1);
-                setDate(prev.toISOString().split("T")[0]);
-              }}
-              className="px-2 py-1 text-slate-400 hover:text-cyan-400 font-bold transition text-base cursor-pointer"
-              title="Previous Day"
+              onClick={() => setShowAchievements(true)}
+              className="flex items-center gap-2 px-3.5 py-2 bg-[#0a0a0c] border border-[#1a1a24] hover:border-cyan-400 rounded-2xl text-xs font-black uppercase tracking-wider text-cyan-300 transition shadow-[0_0_15px_rgba(0,240,255,0.15)] cursor-pointer"
             >
-              ←
+              <span>🏆</span>
+              <span className="hidden sm:inline">ACHIEVEMENTS</span>
+              <span className="px-1.5 py-0.5 rounded-full bg-cyan-950 border border-cyan-500/40 text-[9px] text-cyan-400">
+                {unlockedBadgesCount}/{badges.length || 5}
+              </span>
             </button>
-            <input
-              type="date"
-              value={date}
-              onChange={(e) => setDate(e.target.value)}
-              className="bg-transparent text-xs font-black tracking-widest text-slate-100 focus:outline-none uppercase px-3 cursor-pointer text-center"
-            />
-            <button
-              onClick={() => {
-                const next = new Date(date);
-                next.setDate(next.getDate() + 1);
-                setDate(next.toISOString().split("T")[0]);
-              }}
-              className="px-2 py-1 text-slate-400 hover:text-cyan-400 font-bold transition text-base cursor-pointer"
-              title="Next Day"
-            >
-              →
-            </button>
+
+            {/* Date Selector Navigation */}
+            <div className="flex items-center bg-[#0a0a0c] border border-[#1a1a24] rounded-2xl px-3 py-1.5 shadow-inner">
+              <button
+                onClick={() => {
+                  const prev = new Date(date);
+                  prev.setDate(prev.getDate() - 1);
+                  setDate(prev.toISOString().split("T")[0]);
+                }}
+                className="px-2 py-1 text-slate-400 hover:text-cyan-400 font-bold transition text-base cursor-pointer"
+                title="Previous Day"
+              >
+                ←
+              </button>
+              <input
+                type="date"
+                value={date}
+                onChange={(e) => setDate(e.target.value)}
+                className="bg-transparent text-xs font-black tracking-widest text-slate-100 focus:outline-none uppercase px-3 cursor-pointer text-center"
+              />
+              <button
+                onClick={() => {
+                  const next = new Date(date);
+                  next.setDate(next.getDate() + 1);
+                  setDate(next.toISOString().split("T")[0]);
+                }}
+                className="px-2 py-1 text-slate-400 hover:text-cyan-400 font-bold transition text-base cursor-pointer"
+                title="Next Day"
+              >
+                →
+              </button>
+            </div>
           </div>
         </div>
       </header>
@@ -445,24 +695,30 @@ export default function Dashboard() {
         {/* LEFT COLUMN: TRAINERS, HABITS & DIET PROGRESS (8 COLS) */}
         <div className="lg:col-span-8 space-y-8">
           
-          {/* 1. DAILY FOCUS SPLIT SELECTOR */}
+          {/* 1. DAILY FOCUS SPLIT SELECTOR & PROGRESSIVE OVERLOAD (MODULE 2) */}
           <section className="bg-[#0a0a0c] border border-[#1a1a24] rounded-3xl p-6 sm:p-8 shadow-2xl relative overflow-hidden">
             <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-[#0052FF] via-cyan-400 to-[#00F0FF]"></div>
             
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-5 gap-2">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-5 gap-3">
               <div>
                 <span className="text-[9px] font-black tracking-[0.25em] text-cyan-400 uppercase">
-                  TRAINING PROTOCOL
+                  TRAINING PROTOCOL // VECTOR RAG
                 </span>
                 <h2 className="text-xl font-black italic tracking-tighter uppercase mt-0.5">
                   TODAY'S WORKOUT SPLIT
                 </h2>
               </div>
-              <span className="text-xs font-black tracking-widest text-slate-500 uppercase">
-                GOAL: {profile?.fitness_goals?.toUpperCase() || "HYPERTROPHY"}
-              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setShowSplitEditor(true)}
+                  className="px-3.5 py-1.5 bg-slate-900 border border-slate-800 hover:border-cyan-400 rounded-xl text-[10px] font-black tracking-widest text-cyan-400 uppercase transition cursor-pointer"
+                >
+                  ⚡ CUSTOM SPLIT ARCHITECT
+                </button>
+              </div>
             </div>
             
+            {/* Split Switcher Buttons */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               {[
                 { id: "PUSH DAY", label: "PUSH DAY", desc: "CHEST / DELTS / TRICEPS" },
@@ -497,7 +753,7 @@ export default function Dashboard() {
               })}
             </div>
 
-            {/* SPLIT EXERCISE CHECKLIST */}
+            {/* SPLIT EXERCISE CHECKLIST WITH VECTOR PROGRESSIVE OVERLOAD (MODULE 2) */}
             <div className="mt-6 pt-6 border-t border-[#14141c]">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-xs font-black tracking-[0.2em] text-slate-400 uppercase">
@@ -510,41 +766,58 @@ export default function Dashboard() {
 
               {exercisesLoading ? (
                 <div className="py-6 text-center text-xs text-slate-600 font-bold uppercase animate-pulse">
-                  LOADING EXERCISE METRICS...
+                  QUERYING VECTOR RAG OVERLOAD MEMORY...
                 </div>
               ) : splitExercises.length > 0 ? (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                   {splitExercises.map((ex, index) => {
                     const isDone = log.completed_exercises?.includes(ex.name);
+                    const target = progressionTargets[ex.name];
                     return (
                       <div
                         key={index}
                         onClick={() => handleToggleExercise(ex.name)}
-                        className={`p-4 rounded-2xl border transition-all cursor-pointer flex items-center justify-between ${
+                        className={`p-4 rounded-2xl border transition-all cursor-pointer flex flex-col justify-between ${
                           isDone
                             ? "bg-cyan-950/20 border-cyan-500/50 shadow-[0_0_12px_rgba(0,240,255,0.1)]"
                             : "bg-black border-slate-900 hover:border-slate-800"
                         }`}
                       >
-                        <div className="flex items-center gap-3">
-                          <div className={`w-5 h-5 rounded-lg flex items-center justify-center font-black text-[10px] border transition-all ${
-                            isDone
-                              ? "bg-cyan-400 text-black border-cyan-400 shadow-[0_0_8px_#00F0FF]"
-                              : "border-slate-800 text-transparent"
-                          }`}>
-                            ✓
-                          </div>
-                          <div>
-                            <div className={`text-xs font-black uppercase tracking-tight ${
-                              isDone ? "text-cyan-300 line-through" : "text-white"
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-center gap-3">
+                            <div className={`w-5 h-5 rounded-lg flex items-center justify-center font-black text-[10px] border transition-all flex-shrink-0 ${
+                              isDone
+                                ? "bg-cyan-400 text-black border-cyan-400 shadow-[0_0_8px_#00F0FF]"
+                                : "border-slate-800 text-transparent"
                             }`}>
-                              {ex.name}
+                              ✓
                             </div>
-                            <div className="text-[9px] font-bold text-slate-500 uppercase mt-0.5">
-                              {ex.sets} SETS × {ex.reps} REPS • <span className="text-slate-400">{ex.weight}</span>
+                            <div>
+                              <div className={`text-xs font-black uppercase tracking-tight ${
+                                isDone ? "text-cyan-300 line-through" : "text-white"
+                              }`}>
+                                {ex.name}
+                              </div>
+                              <div className="text-[9px] font-bold text-slate-400 uppercase mt-0.5">
+                                {ex.sets} SETS × {ex.reps} REPS • <span className="text-slate-300">{ex.weight}</span>
+                              </div>
                             </div>
                           </div>
                         </div>
+
+                        {/* Glowing Vector Progressive Overload Target Sub-label */}
+                        {target && (
+                          <div className="mt-2.5 pt-2 border-t border-[#14141c] flex items-center justify-between">
+                            <span className="text-[9px] font-black tracking-wider text-cyan-400 bg-cyan-950/40 border border-cyan-500/30 px-2 py-0.5 rounded-md">
+                              {target.progression_target_text || "🎯 AI Goal: Overload"}
+                            </span>
+                            {target.has_previous_log && (
+                              <span className="text-[8px] font-bold text-slate-500 uppercase">
+                                PREV: {target.previous_performance}
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -559,7 +832,7 @@ export default function Dashboard() {
             </div>
           </section>
 
-          {/* 2. STREAK CHECKLIST PROTOCOL */}
+          {/* 2. STREAK CHECKLIST PROTOCOL (MODULE 3) */}
           <section className="space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="text-xl font-black italic tracking-tighter uppercase">
@@ -572,7 +845,7 @@ export default function Dashboard() {
 
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
               
-              {/* Habit: Workout */}
+              {/* Habit 01: Workout */}
               <button
                 onClick={() => handleToggleHabit("workout_completed", log.workout_completed)}
                 className={`p-5 rounded-3xl border text-left transition-all relative overflow-hidden cursor-pointer ${
@@ -593,7 +866,7 @@ export default function Dashboard() {
                 </div>
               </button>
 
-              {/* Habit: Steps */}
+              {/* Habit 02: Steps */}
               <button
                 onClick={() => handleToggleHabit("steps_met", log.steps_met)}
                 className={`p-5 rounded-3xl border text-left transition-all relative overflow-hidden cursor-pointer ${
@@ -614,7 +887,7 @@ export default function Dashboard() {
                 </div>
               </button>
 
-              {/* Habit: Hydration */}
+              {/* Habit 03: Hydration */}
               <button
                 onClick={() => handleToggleHabit("water_met", log.water_met)}
                 className={`p-5 rounded-3xl border text-left transition-all relative overflow-hidden cursor-pointer ${
@@ -635,7 +908,7 @@ export default function Dashboard() {
                 </div>
               </button>
 
-              {/* Habit: Diet */}
+              {/* Habit 04: Diet */}
               <button
                 onClick={() => handleToggleHabit("diet_met", log.diet_met)}
                 className={`p-5 rounded-3xl border text-left transition-all relative overflow-hidden cursor-pointer ${
@@ -741,9 +1014,11 @@ export default function Dashboard() {
             </div>
           </section>
 
-          {/* 4. DIET MEAL LOGS */}
-          <section className="bg-[#0a0a0c] border border-[#1a1a24] rounded-3xl p-6 sm:p-8 shadow-2xl">
-            <div className="flex items-center justify-between mb-6">
+          {/* 4. AI NATURAL LANGUAGE FOOD PARSER & MEAL LOGS (MODULE 1) */}
+          <section className="bg-[#0a0a0c] border border-[#1a1a24] rounded-3xl p-6 sm:p-8 shadow-2xl space-y-6">
+            
+            {/* Header with Log button */}
+            <div className="flex items-center justify-between">
               <div>
                 <span className="text-[9px] font-black tracking-[0.25em] text-cyan-400 uppercase">
                   DIETARY FUEL PIPELINE
@@ -754,12 +1029,85 @@ export default function Dashboard() {
               </div>
               <button
                 onClick={() => setShowMealModal(true)}
-                className="px-5 py-3 bg-gradient-to-r from-[#0052FF] to-[#00F0FF] text-black text-[10px] font-black tracking-[0.2em] uppercase rounded-xl transition hover:opacity-95 transform active:scale-95 shadow-[0_0_15px_rgba(0,240,255,0.3)] cursor-pointer"
+                className="px-5 py-2.5 bg-gradient-to-r from-[#0052FF] to-[#00F0FF] text-black text-[10px] font-black tracking-[0.2em] uppercase rounded-xl transition hover:opacity-95 transform active:scale-95 shadow-[0_0_15px_rgba(0,240,255,0.3)] cursor-pointer"
               >
-                + LOG FUEL INTAKE
+                + MANUAL LOG
               </button>
             </div>
 
+            {/* AI NATURAL LANGUAGE FOOD PARSER (MODULE 1) */}
+            <div className="bg-black border border-slate-900 rounded-2xl p-5 relative overflow-hidden">
+              <div className="flex items-center gap-2 mb-3">
+                <span className="text-[9px] font-black tracking-[0.25em] text-cyan-400 uppercase bg-cyan-950/40 border border-cyan-500/30 px-2.5 py-0.5 rounded-full">
+                  AI NATURAL LANGUAGE PARSER
+                </span>
+                <span className="text-[9px] font-bold text-slate-500 uppercase">
+                  TYPE INGREDIENTS FREELY
+                </span>
+              </div>
+
+              <form onSubmit={handleParseNlFood} className="space-y-3">
+                <textarea
+                  value={nlFoodInput}
+                  onChange={(e) => setNlFoodInput(e.target.value)}
+                  rows="2"
+                  className="w-full p-3.5 bg-[#08080c] border border-slate-800 rounded-xl text-xs text-white placeholder-slate-600 focus:outline-none focus:border-cyan-400 font-medium"
+                  placeholder="E.G. '150G CHICKEN BREAST, 100G RICE, AND 1 TBSP OLIVE OIL'..."
+                />
+                <div className="flex justify-end">
+                  <button
+                    type="submit"
+                    disabled={nlLoading || !nlFoodInput.trim()}
+                    className="px-5 py-2.5 bg-white text-black font-black text-[10px] tracking-[0.2em] uppercase rounded-xl transition hover:bg-slate-200 cursor-pointer disabled:opacity-50"
+                  >
+                    {nlLoading ? "CALCULATING MACROS..." : "PARSE FOOD INTAKE ⚡"}
+                  </button>
+                </div>
+              </form>
+
+              {/* Parsed Result Preview Card */}
+              {nlParsedResult && (
+                <div className="mt-4 p-4 bg-[#0c0c12] border border-cyan-500/40 rounded-xl space-y-3 animate-fade-in">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <span className="text-[8px] font-black tracking-widest text-cyan-400 uppercase">
+                        PARSED INGREDIENT PROFILE
+                      </span>
+                      <h4 className="text-sm font-black text-white uppercase italic mt-0.5">
+                        {nlParsedResult.inferred_name}
+                      </h4>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-base font-black text-white">{nlParsedResult.macros.calories}</span>
+                      <span className="text-[8px] font-bold text-slate-500 block">KCAL</span>
+                    </div>
+                  </div>
+
+                  <div className="flex gap-4 text-xs font-bold uppercase text-slate-300">
+                    <span>PROTEIN: <span className="text-cyan-400 font-black">{nlParsedResult.macros.protein_g}G</span></span>
+                    <span>CARBS: <span className="text-blue-400 font-black">{nlParsedResult.macros.carbs_g}G</span></span>
+                    <span>FAT: <span className="text-indigo-400 font-black">{nlParsedResult.macros.fat_g}G</span></span>
+                  </div>
+
+                  <div className="flex gap-3 pt-2 border-t border-slate-900">
+                    <button
+                      onClick={handleCommitParsedMealToDaily}
+                      className="flex-1 py-2.5 bg-gradient-to-r from-[#0052FF] to-[#00F0FF] text-black font-black text-[10px] tracking-widest uppercase rounded-xl transition shadow-[0_0_12px_rgba(0,240,255,0.25)] cursor-pointer"
+                    >
+                      LOG TO DAILY TARGETS →
+                    </button>
+                    <button
+                      onClick={handleSaveParsedToCustom}
+                      className="px-4 py-2.5 bg-slate-900 border border-slate-800 hover:border-cyan-400 text-cyan-300 font-black text-[10px] tracking-widest uppercase rounded-xl transition cursor-pointer"
+                    >
+                      ★ SAVE TO CUSTOM MEALS
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Meal Items List */}
             {log.meals && log.meals.length > 0 ? (
               <div className="divide-y divide-[#14141c]">
                 {log.meals.map((meal, idx) => (
@@ -767,9 +1115,9 @@ export default function Dashboard() {
                     <div>
                       <h4 className="font-black text-sm text-white uppercase tracking-tight">{meal.name}</h4>
                       <div className="flex gap-4 text-[10px] text-slate-400 font-bold uppercase mt-1">
-                        <span>P: <span className="text-cyan-400">{meal.protein_g}G</span></span>
-                        <span>C: <span className="text-blue-400">{meal.carbs_g}G</span></span>
-                        <span>F: <span className="text-indigo-400">{meal.fat_g}G</span></span>
+                        <span>P: <span className="text-cyan-400 font-bold">{meal.protein_g}G</span></span>
+                        <span>C: <span className="text-blue-400 font-bold">{meal.carbs_g}G</span></span>
+                        <span>F: <span className="text-indigo-400 font-bold">{meal.fat_g}G</span></span>
                         <span className="text-slate-500 font-semibold">{meal.logged_at}</span>
                       </div>
                     </div>
@@ -781,7 +1129,7 @@ export default function Dashboard() {
                 ))}
               </div>
             ) : (
-              <div className="text-center py-10 border border-dashed border-slate-900 rounded-2xl bg-black">
+              <div className="text-center py-8 border border-dashed border-slate-900 rounded-2xl bg-black">
                 <p className="text-xs text-slate-600 font-black uppercase tracking-wider">
                   NO FOOD INTAKE REGISTERED TODAY. LOG A MEAL OR QUERY AI TO POPULATE STATS.
                 </p>
@@ -791,10 +1139,66 @@ export default function Dashboard() {
 
         </div>
 
-        {/* RIGHT COLUMN: WATER, STEPS, AND AI TRACKER LOGS (4 COLS) */}
+        {/* RIGHT COLUMN: SAVED MEALS, WATER, STEPS, AND AI CONSOLE (4 COLS) */}
         <div className="lg:col-span-4 space-y-8">
           
-          {/* 1. HYDRATION STATION */}
+          {/* 1. SAVED MEAL TEMPLATES PANEL (MODULE 1) */}
+          <section className="bg-[#0a0a0c] border border-[#1a1a24] rounded-3xl p-6 shadow-2xl">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <span className="text-[9px] font-black tracking-[0.25em] text-cyan-400 uppercase">
+                  1-CLICK TEMPLATES
+                </span>
+                <h3 className="text-xs font-black tracking-[0.2em] text-white uppercase mt-0.5">
+                  SAVED MEALS ({savedMeals.length})
+                </h3>
+              </div>
+            </div>
+
+            {savedMeals.length > 0 ? (
+              <div className="space-y-2.5 max-h-56 overflow-y-auto pr-1">
+                {savedMeals.map((sm) => (
+                  <div
+                    key={sm.id}
+                    className="p-3 bg-black border border-slate-900 rounded-xl flex items-center justify-between hover:border-slate-800 transition"
+                  >
+                    <div className="flex-1 min-w-0 pr-2">
+                      <h5 className="text-xs font-black uppercase tracking-tight text-white truncate">{sm.name}</h5>
+                      <div className="flex gap-2 text-[9px] text-slate-500 font-bold uppercase mt-0.5">
+                        <span className="text-cyan-400">{sm.calories} KCAL</span>
+                        <span>• P:{sm.protein_g}g</span>
+                        <span>• C:{sm.carbs_g}g</span>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5 flex-shrink-0">
+                      <button
+                        onClick={() => handleQuickLogSavedMeal(sm)}
+                        className="px-2.5 py-1 bg-cyan-950/60 border border-cyan-500/40 hover:bg-cyan-900 text-cyan-300 rounded-lg text-xs font-black transition cursor-pointer"
+                        title="Log this meal to today"
+                      >
+                        + LOG
+                      </button>
+                      <button
+                        onClick={() => handleDeleteSavedMeal(sm.id)}
+                        className="w-6 h-6 text-slate-600 hover:text-red-400 text-xs flex items-center justify-center transition cursor-pointer"
+                        title="Remove saved meal"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-center py-6 border border-dashed border-slate-900 rounded-2xl bg-black">
+                <p className="text-[10px] text-slate-600 font-bold uppercase tracking-wider">
+                  NO SAVED MEALS YET. PARSE OR LOG A MEAL AND CLICK "SAVE TO CUSTOM MEALS".
+                </p>
+              </div>
+            )}
+          </section>
+
+          {/* 2. HYDRATION STATION */}
           <section className="bg-[#0a0a0c] border border-[#1a1a24] rounded-3xl p-6 shadow-2xl text-center">
             <div className="flex items-center justify-between mb-4">
               <span className="text-[9px] font-black tracking-[0.25em] text-cyan-400 uppercase">
@@ -833,7 +1237,7 @@ export default function Dashboard() {
             </div>
           </section>
 
-          {/* 2. STEPS TRACKER */}
+          {/* 3. STEPS TRACKER */}
           <section className="bg-[#0a0a0c] border border-[#1a1a24] rounded-3xl p-6 shadow-2xl text-center">
             <div className="flex items-center justify-between mb-4">
               <span className="text-[9px] font-black tracking-[0.25em] text-cyan-400 uppercase">
@@ -872,63 +1276,206 @@ export default function Dashboard() {
             </div>
           </section>
 
-          {/* 3. AI STRATEGIST CONSOLE */}
+          {/* 4. AI TACTICAL CONSOLE: STRATEGIST & PANTRY COACHING (MODULE 4) */}
           <section className="bg-[#0a0a0c] border border-[#1a1a24] rounded-3xl p-6 shadow-2xl relative overflow-hidden">
             <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-[#0052FF] via-cyan-400 to-[#00F0FF]"></div>
             
-            <div className="flex items-center gap-2 mb-3">
-              <span className="text-[9px] font-black tracking-[0.25em] text-cyan-400 uppercase">
-                AI DIET STRATEGIST
-              </span>
-              <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping"></span>
+            {/* AI Tab Selector */}
+            <div className="flex items-center gap-2 mb-4">
+              <button
+                onClick={() => setActiveAiTab("STRATEGIST")}
+                className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-wider transition cursor-pointer border ${
+                  activeAiTab === "STRATEGIST"
+                    ? "bg-cyan-950/60 border-cyan-400 text-cyan-300 shadow-[0_0_10px_rgba(0,240,255,0.2)]"
+                    : "bg-black border-slate-900 text-slate-500 hover:text-slate-300"
+                }`}
+              >
+                AI STRATEGIST
+              </button>
+              <button
+                onClick={() => setActiveAiTab("PANTRY")}
+                className={`px-3 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-wider transition cursor-pointer border ${
+                  activeAiTab === "PANTRY"
+                    ? "bg-cyan-950/60 border-cyan-400 text-cyan-300 shadow-[0_0_10px_rgba(0,240,255,0.2)]"
+                    : "bg-black border-slate-900 text-slate-500 hover:text-slate-300"
+                }`}
+              >
+                PANTRY COACHING 🍳
+              </button>
             </div>
 
-            <form onSubmit={handleAiInquiry} className="space-y-4">
-              <p className="text-[10px] font-bold text-slate-400 uppercase leading-relaxed">
-                SYNTHESIZE MEAL PROTOCOLS TARGETED TO YOUR REMAINING {remainingProtein.toFixed(0)}G PROTEIN GOAL:
-              </p>
-              <textarea
-                value={aiPrompt}
-                onChange={(e) => setAiPrompt(e.target.value)}
-                rows="2"
-                className="w-full p-4 bg-black border border-slate-900 rounded-2xl text-xs text-slate-200 focus:outline-none focus:border-cyan-400 placeholder-slate-700 font-medium"
-                placeholder="E.G., 'QUICK POST-WORKOUT MEAL WITH HIGH PROTEIN'..."
-              />
-              <button
-                type="submit"
-                disabled={aiLoading}
-                className="w-full py-3.5 bg-white text-black font-black text-[10px] tracking-[0.25em] uppercase rounded-2xl transition hover:bg-slate-200 cursor-pointer shadow-[0_0_15px_rgba(255,255,255,0.15)] disabled:opacity-50"
-              >
-                {aiLoading ? "SYNTHESIZING PROTOCOL..." : "EXECUTE AI QUERY →"}
-              </button>
-            </form>
+            {/* TAB 1: AI STRATEGIST */}
+            {activeAiTab === "STRATEGIST" && (
+              <div className="space-y-4">
+                <form onSubmit={handleAiInquiry} className="space-y-3">
+                  <p className="text-[10px] font-bold text-slate-400 uppercase leading-relaxed">
+                    SYNTHESIZE MEAL PROTOCOLS TARGETED TO YOUR REMAINING {remainingProtein.toFixed(0)}G PROTEIN GOAL:
+                  </p>
+                  <textarea
+                    value={aiPrompt}
+                    onChange={(e) => setAiPrompt(e.target.value)}
+                    rows="2"
+                    className="w-full p-3.5 bg-black border border-slate-900 rounded-2xl text-xs text-slate-200 focus:outline-none focus:border-cyan-400 placeholder-slate-700 font-medium"
+                    placeholder="E.G., 'QUICK POST-WORKOUT MEAL WITH HIGH PROTEIN'..."
+                  />
+                  <button
+                    type="submit"
+                    disabled={aiLoading}
+                    className="w-full py-3 bg-white text-black font-black text-[10px] tracking-[0.25em] uppercase rounded-2xl transition hover:bg-slate-200 cursor-pointer shadow-[0_0_15px_rgba(255,255,255,0.15)] disabled:opacity-50"
+                  >
+                    {aiLoading ? "SYNTHESIZING PROTOCOL..." : "EXECUTE AI QUERY →"}
+                  </button>
+                </form>
 
-            {aiResponse && (
-              <div className="mt-6 p-5 bg-black border border-cyan-500/40 rounded-2xl space-y-4 shadow-[0_0_20px_rgba(0,240,255,0.1)] relative">
-                <div>
-                  <span className="text-[8px] font-black tracking-[0.2em] text-cyan-400 uppercase bg-cyan-950/40 border border-cyan-500/30 px-2 py-1 rounded-md">
-                    SYNTHESIZED RECIPE
-                  </span>
-                  <h4 className="font-black text-sm uppercase text-white mt-2.5">{aiResponse.name}</h4>
-                  <div className="flex gap-4 text-[10px] text-slate-400 font-bold uppercase mt-1">
-                    <span>P: <span className="text-cyan-400">{aiResponse.protein}G</span></span>
-                    <span>C: <span className="text-blue-400">{aiResponse.carbs}G</span></span>
-                    <span>F: <span className="text-indigo-400">{aiResponse.fat}G</span></span>
-                    <span className="text-white font-black">{aiResponse.calories} KCAL</span>
+                {aiResponse && (
+                  <div className="mt-4 p-4 bg-black border border-cyan-500/40 rounded-2xl space-y-3 shadow-[0_0_20px_rgba(0,240,255,0.1)] relative">
+                    <div>
+                      <span className="text-[8px] font-black tracking-[0.2em] text-cyan-400 uppercase bg-cyan-950/40 border border-cyan-500/30 px-2 py-0.5 rounded">
+                        SYNTHESIZED RECIPE
+                      </span>
+                      <h4 className="font-black text-sm uppercase text-white mt-1.5">{aiResponse.name}</h4>
+                      <div className="flex gap-3 text-[10px] text-slate-400 font-bold uppercase mt-1">
+                        <span>P: <span className="text-cyan-400">{aiResponse.protein}G</span></span>
+                        <span>C: <span className="text-blue-400">{aiResponse.carbs}G</span></span>
+                        <span>F: <span className="text-indigo-400">{aiResponse.fat}G</span></span>
+                        <span className="text-white font-black">{aiResponse.calories} KCAL</span>
+                      </div>
+                    </div>
+
+                    <div className="text-[11px] text-slate-300 leading-relaxed border-t border-[#14141c] pt-2">
+                      {aiResponse.instructions}
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={handleAddAiMealToLog}
+                      className="w-full py-2.5 bg-gradient-to-r from-[#0052FF] to-[#00F0FF] text-black font-black text-[10px] tracking-[0.2em] uppercase rounded-xl transition shadow-[0_0_15px_rgba(0,240,255,0.3)] cursor-pointer"
+                    >
+                      APPEND TO DIET LOG
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* TAB 2: PANTRY COACHING FULL-DAY PLANNER (MODULE 4) */}
+            {activeAiTab === "PANTRY" && (
+              <div className="space-y-4">
+                <p className="text-[10px] font-bold text-slate-400 uppercase leading-relaxed">
+                  INPUT INGREDIENTS CURRENTLY IN YOUR KITCHEN TO COMPUTE FULL-DAY MACRO PROTOCOL:
+                </p>
+
+                {/* Tag Input */}
+                <div className="space-y-2">
+                  <div className="flex flex-wrap gap-1.5 min-h-12 p-2 bg-black border border-slate-900 rounded-xl">
+                    {pantryIngredients.map((tag) => (
+                      <span
+                        key={tag}
+                        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-cyan-950/60 border border-cyan-500/30 text-cyan-300 text-[10px] font-bold uppercase"
+                      >
+                        {tag}
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveIngredientTag(tag)}
+                          className="hover:text-red-400 ml-1 cursor-pointer"
+                        >
+                          ×
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={newIngredientTag}
+                      onChange={(e) => setNewIngredientTag(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); handleAddIngredientTag(); } }}
+                      className="flex-1 px-3 py-2 bg-black border border-slate-800 rounded-xl text-xs text-white placeholder-slate-700 focus:outline-none focus:border-cyan-400"
+                      placeholder="ADD INGREDIENT (E.G. 'SWEET POTATOES')..."
+                    />
+                    <button
+                      type="button"
+                      onClick={handleAddIngredientTag}
+                      className="px-3 py-2 bg-slate-900 border border-slate-800 hover:border-cyan-400 text-cyan-400 text-xs font-black uppercase rounded-xl cursor-pointer"
+                    >
+                      + ADD
+                    </button>
                   </div>
                 </div>
 
-                <div className="text-[11px] text-slate-300 leading-relaxed border-t border-[#14141c] pt-3">
-                  {aiResponse.instructions}
+                {/* Meal Count Selector */}
+                <div className="flex items-center justify-between text-xs font-bold uppercase text-slate-400 pt-1">
+                  <span>MEALS TO COMPILE:</span>
+                  <div className="flex gap-1.5">
+                    {[2, 3, 4].map((count) => (
+                      <button
+                        key={count}
+                        type="button"
+                        onClick={() => setMealCount(count)}
+                        className={`w-7 h-7 rounded-lg text-xs font-black border transition cursor-pointer ${
+                          mealCount === count
+                            ? "bg-cyan-400 text-black border-cyan-400"
+                            : "bg-black text-slate-500 border-slate-900"
+                        }`}
+                      >
+                        {count}
+                      </button>
+                    ))}
+                  </div>
                 </div>
 
                 <button
                   type="button"
-                  onClick={handleAddAiMealToLog}
-                  className="w-full py-3 bg-gradient-to-r from-[#0052FF] to-[#00F0FF] text-black font-black text-[10px] tracking-[0.2em] uppercase rounded-xl transition shadow-[0_0_15px_rgba(0,240,255,0.3)] cursor-pointer"
+                  disabled={pantryLoading || pantryIngredients.length === 0}
+                  onClick={handleGeneratePantryPlan}
+                  className="w-full py-3 bg-gradient-to-r from-[#0052FF] to-[#00F0FF] text-black font-black text-[10px] tracking-[0.2em] uppercase rounded-xl transition shadow-[0_0_20px_rgba(0,240,255,0.3)] cursor-pointer disabled:opacity-50"
                 >
-                  APPEND TO DIET LOG
+                  {pantryLoading ? "COMPUTING PANTRY PROTOCOLS..." : "CONSTRUCT FULL-DAY PROTOCOL ⚡"}
                 </button>
+
+                {/* Pantry Timeline View */}
+                {pantryPlan && pantryPlan.meals && (
+                  <div className="mt-4 space-y-3 animate-fade-in border-t border-[#14141c] pt-4">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[9px] font-black tracking-widest text-cyan-400 uppercase">
+                        FULL-DAY MEAL TIMELINE
+                      </span>
+                      <button
+                        type="button"
+                        onClick={handleLogAllPantryMeals}
+                        className="px-3 py-1 bg-cyan-400 text-black text-[9px] font-black tracking-widest uppercase rounded-lg shadow hover:bg-cyan-300 transition cursor-pointer"
+                      >
+                        + LOG ALL MEALS
+                      </button>
+                    </div>
+
+                    <div className="space-y-2.5 max-h-72 overflow-y-auto pr-1">
+                      {pantryPlan.meals.map((mealItem, mIdx) => (
+                        <div
+                          key={mIdx}
+                          className="p-3 bg-black border border-slate-900 rounded-xl space-y-1.5"
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="text-[8px] font-black tracking-widest text-slate-500 uppercase">
+                              {mealItem.meal_slot}
+                            </span>
+                            <span className="text-xs font-black text-cyan-300">{mealItem.calories} KCAL</span>
+                          </div>
+                          <h5 className="text-xs font-black text-white uppercase">{mealItem.name}</h5>
+                          <div className="flex gap-2 text-[9px] font-bold text-slate-400 uppercase">
+                            <span>P: {mealItem.protein_g}G</span>
+                            <span>C: {mealItem.carbs_g}G</span>
+                            <span>F: {mealItem.fat_g}G</span>
+                          </div>
+                          <p className="text-[10px] text-slate-400 leading-tight pt-1">
+                            {mealItem.instructions}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
           </section>
@@ -1039,6 +1586,26 @@ export default function Dashboard() {
           </div>
         </div>
       )}
+
+      {/* --- ACHIEVEMENTS MODAL (MODULE 3) --- */}
+      <AchievementsModal
+        isOpen={showAchievements}
+        onClose={() => {
+          setShowAchievements(false);
+          setNewlyUnlockedBadge(null);
+        }}
+        badges={badges}
+        newlyUnlockedBadge={newlyUnlockedBadge}
+      />
+
+      {/* --- CUSTOM SPLIT EDITOR MODAL (MODULE 2) --- */}
+      <CustomSplitEditor
+        isOpen={showSplitEditor}
+        onClose={() => setShowSplitEditor(false)}
+        customSplits={customSplits}
+        onSaveSplits={(updated) => setCustomSplits(updated)}
+        onSelectSplit={(splitKey) => setSelectedSplit(splitKey)}
+      />
 
     </div>
   );

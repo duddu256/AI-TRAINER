@@ -1,14 +1,34 @@
-from fastapi import FastAPI, HTTPException, Depends, status, Query
+from fastapi import FastAPI, HTTPException, Depends, status, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, EmailStr
 from app.services.supabase_client import supabase_auth, supabase_db
+from app.services.ai_service import (
+    parse_food_string,
+    generate_pantry_full_day_plan,
+    generate_strategist_meal_suggestion
+)
+from app.services.saved_meals_service import (
+    get_user_saved_meals,
+    create_saved_meal,
+    delete_saved_meal
+)
+from app.services.vector_memory_service import (
+    record_workout_milestone,
+    get_progression_target,
+    get_user_custom_splits,
+    save_user_custom_splits
+)
+from app.services.gamification_service import (
+    get_user_badges,
+    evaluate_streaks_and_milestones
+)
 from datetime import date as date_type
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 app = FastAPI(
-    title="AuraTrainer Core Backend",
-    description="Secure Python FastAPI endpoint router with RLS-Bypass DB clients"
+    title="AuraTrainer Core Backend // Phase 2 MVP",
+    description="Advanced AI-Automated Athletic Training Engine with Vector Overload Memory and Gamification"
 )
 
 # Explicit localhost origins for CORS with credentials
@@ -93,6 +113,34 @@ class MealSuggestionRequest(BaseModel):
     carbs_g: float
     fat_g: float
     fitness_goals: str = "Hypertrophy"
+    prompt: Optional[str] = None
+
+class ParseFoodRequest(BaseModel):
+    input_text: str
+
+class SavedMealCreate(BaseModel):
+    name: str
+    calories: int
+    protein_g: float
+    carbs_g: float
+    fat_g: float
+
+class RecordWorkoutPerformanceRequest(BaseModel):
+    exercise_name: str
+    sets: int
+    reps: str
+    weight: str
+    date: date_type
+
+class PantryPlannerRequest(BaseModel):
+    ingredients: List[str]
+    target_calories: int
+    target_protein: float
+    target_carbs: float
+    target_fat: float
+    meal_count: int = 3
+    body_type: Optional[str] = "Mesomorph"
+    fitness_goals: Optional[str] = "Hypertrophy"
 
 # --- CORE USER ROUTES ---
 
@@ -148,12 +196,15 @@ async def get_user_profile(current_user = Depends(get_current_user)):
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
-# --- WORKOUT ENGINE ENDPOINT ---
+# --- WORKOUT ENGINE & VECTOR MEMORY ENDPOINTS ---
 
 @app.get("/api/workouts")
-async def get_workouts_by_split(split: str = Query(..., description="PUSH DAY, PULL DAY, or LEG DAY")):
+async def get_workouts_by_split(
+    split: str = Query(..., description="PUSH DAY, PULL DAY, LEG DAY, or custom split name"),
+    current_user = Depends(get_current_user)
+):
     """
-    Returns the exercise protocol details based on selected daily tracking parameters.
+    Returns exercise protocols from standard catalog or custom split templates.
     """
     splits_catalog = {
         "PUSH DAY": [
@@ -187,7 +238,130 @@ async def get_workouts_by_split(split: str = Query(..., description="PUSH DAY, P
     elif clean_split in ("REST", "RECOVERY"):
         clean_split = "REST / RECOVERY"
 
-    return splits_catalog.get(clean_split, [])
+    if clean_split in splits_catalog:
+        return splits_catalog[clean_split]
+
+    # Check custom user splits
+    custom_splits = get_user_custom_splits(current_user.id)
+    for s_name, exercises in custom_splits.items():
+        if s_name.upper().strip() == clean_split:
+            return exercises
+
+    return []
+
+@app.get("/api/workouts/progression-target")
+async def get_exercise_progression_target(
+    exercise_name: str = Query(..., description="Name of the exercise"),
+    current_user = Depends(get_current_user)
+):
+    """
+    Module 2: Queries Vector memory for previous performances and outputs targeted progressive overload.
+    """
+    target = get_progression_target(current_user.id, exercise_name)
+    return target
+
+@app.post("/api/workouts/record-performance")
+async def record_exercise_performance(
+    payload: RecordWorkoutPerformanceRequest,
+    current_user = Depends(get_current_user)
+):
+    """
+    Module 2: Upserts performance summary string into vector memory.
+    """
+    entry = record_workout_milestone(
+        user_id=current_user.id,
+        exercise_name=payload.exercise_name,
+        sets=payload.sets,
+        reps=payload.reps,
+        weight=payload.weight,
+        date_str=str(payload.date)
+    )
+    return {"status": "Performance recorded to Vector RAG Memory", "entry": entry}
+
+@app.get("/api/workouts/custom-splits")
+async def get_custom_splits_endpoint(current_user = Depends(get_current_user)):
+    """
+    Module 2: Returns custom split templates for user.
+    """
+    return get_user_custom_splits(current_user.id)
+
+@app.post("/api/workouts/custom-splits")
+async def save_custom_splits_endpoint(
+    splits: Dict[str, List[Dict[str, Any]]] = Body(...),
+    current_user = Depends(get_current_user)
+):
+    """
+    Module 2: Saves custom split templates.
+    """
+    saved = save_user_custom_splits(current_user.id, splits)
+    return {"status": "Custom splits updated", "splits": saved}
+
+# --- SAVED MEALS CRUD (MODULE 1) ---
+
+@app.get("/api/saved-meals")
+async def list_saved_meals(current_user = Depends(get_current_user)):
+    """
+    Module 1: Returns user's saved meal templates.
+    """
+    return get_user_saved_meals(current_user.id)
+
+@app.post("/api/saved-meals", status_code=status.HTTP_201_CREATED)
+async def create_saved_meal_endpoint(
+    meal: SavedMealCreate,
+    current_user = Depends(get_current_user)
+):
+    """
+    Module 1: Creates a reusable saved meal template.
+    """
+    created = create_saved_meal(current_user.id, meal.model_dump())
+    return {"status": "Meal template saved!", "meal": created}
+
+@app.delete("/api/saved-meals/{meal_id}")
+async def delete_saved_meal_endpoint(
+    meal_id: str,
+    current_user = Depends(get_current_user)
+):
+    """
+    Module 1: Deletes a saved meal template.
+    """
+    success = delete_saved_meal(current_user.id, meal_id)
+    return {"status": "Deleted successfully", "success": success}
+
+# --- AI NATURAL LANGUAGE FOOD PARSER & PANTRY (MODULE 1 & 4) ---
+
+@app.post("/api/ai/parse-food")
+async def parse_food_endpoint(payload: ParseFoodRequest):
+    """
+    Module 1: Parses natural language food text string into structured macro breakdown.
+    """
+    result = parse_food_string(payload.input_text)
+    return result
+
+@app.post("/api/ai/pantry-planner")
+async def pantry_planner_endpoint(payload: PantryPlannerRequest):
+    """
+    Module 4: Full-day nutrition protocol planner based on kitchen inventory and remaining macros.
+    """
+    plan = generate_pantry_full_day_plan(
+        ingredients=payload.ingredients,
+        target_calories=payload.target_calories,
+        target_protein=payload.target_protein,
+        target_carbs=payload.target_carbs,
+        target_fat=payload.target_fat,
+        body_type=payload.body_type or "Mesomorph",
+        fitness_goals=payload.fitness_goals or "Hypertrophy",
+        meal_count=payload.meal_count
+    )
+    return plan
+
+# --- GAMIFICATION & ACHIEVEMENTS (MODULE 3) ---
+
+@app.get("/api/badges")
+async def get_badges_endpoint(current_user = Depends(get_current_user)):
+    """
+    Module 3: Returns all badges with user's unlock statuses and timestamps.
+    """
+    return get_user_badges(current_user.id)
 
 # --- TRACKING & HABIT ENDPOINTS ---
 
@@ -233,7 +407,6 @@ async def update_trackers(tracker_data: TrackerUpdate, current_user = Depends(ge
         # Ensure daily log exists first
         existing = supabase_db.table("daily_logs").select("id").eq("user_id", current_user.id).eq("date", date_str).execute()
         if not existing.data:
-            # Create initialized row then update
             init_row = {
                 "user_id": current_user.id,
                 "date": date_str,
@@ -250,10 +423,19 @@ async def update_trackers(tracker_data: TrackerUpdate, current_user = Depends(ge
             }
             init_row.update(update_payload)
             insert_res = supabase_db.table("daily_logs").insert(init_row).execute()
-            return {"status": "Trackers saved!", "data": next(iter(insert_res.data), init_row)}
+            saved_data = next(iter(insert_res.data), init_row)
+        else:
+            res = supabase_db.table("daily_logs").update(update_payload).eq("user_id", current_user.id).eq("date", date_str).execute()
+            saved_data = next(iter(res.data), {})
 
-        res = supabase_db.table("daily_logs").update(update_payload).eq("user_id", current_user.id).eq("date", date_str).execute()
-        return {"status": "Trackers saved!", "data": next(iter(res.data), {})}
+        # Evaluate streak badges in real-time
+        newly_unlocked = evaluate_streaks_and_milestones(current_user.id)
+
+        return {
+            "status": "Trackers saved!",
+            "data": saved_data,
+            "newly_unlocked_badges": newly_unlocked
+        }
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
@@ -263,7 +445,6 @@ async def log_meal(meal_data: MealLog, current_user = Depends(get_current_user))
     try:
         res = supabase_db.table("daily_logs").select("meals").eq("user_id", current_user.id).eq("date", date_str).execute()
         if not res.data:
-            # Initialize daily log if not yet present
             current_meals = []
             new_meal = meal_data.model_dump()
             new_meal["id"] = f"m_{len(current_meals) + 1}"
@@ -285,69 +466,50 @@ async def log_meal(meal_data: MealLog, current_user = Depends(get_current_user))
                 "steps_met": False
             }
             insert_res = supabase_db.table("daily_logs").insert(init_row).execute()
-            return {"status": "Meal logged!", "data": next(iter(insert_res.data), {})}
+            saved_data = next(iter(insert_res.data), {})
+        else:
+            first_row = next(iter(res.data), {})
+            current_meals = first_row.get("meals", []) or []
+            
+            new_meal = meal_data.model_dump()
+            new_meal["id"] = f"m_{len(current_meals) + 1}"
+            new_meal["date"] = str(new_meal["date"])
+            current_meals.append(new_meal)
+            
+            update_res = supabase_db.table("daily_logs").update({"meals": current_meals}).eq("user_id", current_user.id).eq("date", date_str).execute()
+            saved_data = next(iter(update_res.data), {})
 
-        first_row = next(iter(res.data), {})
-        current_meals = first_row.get("meals", []) or []
-        
-        new_meal = meal_data.model_dump()
-        new_meal["id"] = f"m_{len(current_meals) + 1}"
-        new_meal["date"] = str(new_meal["date"])
-        current_meals.append(new_meal)
-        
-        update_res = supabase_db.table("daily_logs").update({"meals": current_meals}).eq("user_id", current_user.id).eq("date", date_str).execute()
-        return {"status": "Meal logged!", "data": next(iter(update_res.data), {})}
+        # Evaluate streak badges
+        newly_unlocked = evaluate_streaks_and_milestones(current_user.id)
+
+        return {
+            "status": "Meal logged!",
+            "data": saved_data,
+            "newly_unlocked_badges": newly_unlocked
+        }
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
-# --- AI MEAL RECOMMENDATIONS ENGINE ---
+# --- AI RECIPES ENGINE ---
 
 @app.post("/api/ai/meal-suggestion")
 async def suggest_meal(request: MealSuggestionRequest):
     """
-    Processes user remaining targets and suggests an anabolic custom recipe.
+    Processes user remaining targets and custom prompt to synthesize a high-precision anabolic recipe.
     """
-    calories = max(100, request.calories)
-    protein = request.protein_g
-    carbs = request.carbs_g
-    fat = request.fat_g
-    goals = request.fitness_goals or "Hypertrophy"
-    
-    # Dynamic mathematical model parsing remaining goals to build custom recipes
-    if protein > 30:
-        recipe = {
-            "name": "Seared Lemon Herb Tuna Fillet",
-            "calories": max(250, int(calories * 0.45)),
-            "protein": round(max(25.0, protein), 1),
-            "carbs": round(max(5.0, carbs * 0.2), 1),
-            "fat": round(max(4.0, fat * 0.25), 1),
-            "instructions": f"Sear 180g fresh tuna on high heat for 2 mins each side. Season with lemon, crushed black pepper, and coarse sea salt to hit your {protein:.0f}g protein target!"
-        }
-    elif carbs > 40:
-        recipe = {
-            "name": "Anabolic Berry Oatmeal Mash",
-            "calories": max(300, int(calories * 0.4)),
-            "protein": 28.0,
-            "carbs": round(max(30.0, carbs), 1),
-            "fat": 6.0,
-            "instructions": f"Mash 1 ripe banana with 80g quick oats, 1 scoop whey isolate, and warm almond milk. Stir in fresh blueberries for immediate glycogen replenishment ({goals})."
-        }
-    elif goals == "Fat Loss":
-        recipe = {
-            "name": "Grilled Chicken & Asparagus Skillet",
-            "calories": max(280, int(calories * 0.35)),
-            "protein": 38.0,
-            "carbs": 12.0,
-            "fat": 7.0,
-            "instructions": "Pan-sear 180g skinless chicken breast with 100g green asparagus and cherry tomatoes in 1 tsp olive oil with smoked paprika and garlic."
-        }
-    else:
-        recipe = {
-            "name": "Avocado & Egg White Sourdough Toast",
-            "calories": 340,
-            "protein": 24.0,
-            "carbs": 28.0,
-            "fat": 12.0,
-            "instructions": "Toast 1 slice artisanal sourdough. Spread 60g ripe mashed avocado. Scramble 4 egg whites with 1 whole egg and finish with cracked red pepper flakes."
-        }
-    return recipe
+    try:
+        recipe = generate_strategist_meal_suggestion(
+            prompt=request.prompt,
+            calories=request.calories,
+            protein_g=request.protein_g,
+            carbs_g=request.carbs_g,
+            fat_g=request.fat_g,
+            fitness_goals=request.fitness_goals
+        )
+        return recipe
+    except Exception as e:
+        print(f"[Meal Suggestion Error] {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate meal suggestion: {str(e)}"
+        )

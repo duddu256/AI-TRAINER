@@ -114,7 +114,7 @@ export const api = {
     return res.json();
   },
 
-  // Fetch exercises based on selected daily workout split
+  // 4. Workout Engine & Vector Progressive Overload (Module 2)
   getWorkoutsBySplit: async (splitName) => {
     const res = await fetch(
       `${API_BASE_URL}/api/workouts?split=${encodeURIComponent(splitName)}`,
@@ -130,15 +130,147 @@ export const api = {
     return res.json();
   },
 
-  // AI Meal Suggestion Engine
+  getProgressionTarget: async (exerciseName) => {
+    const res = await fetch(
+      `${API_BASE_URL}/api/workouts/progression-target?exercise_name=${encodeURIComponent(exerciseName)}`,
+      {
+        method: "GET",
+        headers: getAuthHeaders(),
+      }
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "Failed to fetch progression target");
+    }
+    return res.json();
+  },
+
+  recordWorkoutPerformance: async (performanceData) => {
+    const res = await fetch(`${API_BASE_URL}/api/workouts/record-performance`, {
+      method: "POST",
+      headers: getAuthHeaders(),
+      body: JSON.stringify(performanceData),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "Failed to record workout performance");
+    }
+    return res.json();
+  },
+
+  getCustomSplits: async () => {
+    const res = await fetch(`${API_BASE_URL}/api/workouts/custom-splits`, {
+      method: "GET",
+      headers: getAuthHeaders(),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "Failed to fetch custom splits");
+    }
+    return res.json();
+  },
+
+  saveCustomSplits: async (splitsData) => {
+    const res = await fetch(`${API_BASE_URL}/api/workouts/custom-splits`, {
+      method: "POST",
+      headers: getAuthHeaders(),
+      body: JSON.stringify(splitsData),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "Failed to save custom splits");
+    }
+    return res.json();
+  },
+
+  // 5. Saved Meals CRUD (Module 1)
+  getSavedMeals: async () => {
+    const res = await fetch(`${API_BASE_URL}/api/saved-meals`, {
+      method: "GET",
+      headers: getAuthHeaders(),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "Failed to load saved meals");
+    }
+    return res.json();
+  },
+
+  saveMeal: async (mealData) => {
+    const res = await fetch(`${API_BASE_URL}/api/saved-meals`, {
+      method: "POST",
+      headers: getAuthHeaders(),
+      body: JSON.stringify(mealData),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "Failed to save meal template");
+    }
+    return res.json();
+  },
+
+  deleteSavedMeal: async (mealId) => {
+    const res = await fetch(`${API_BASE_URL}/api/saved-meals/${mealId}`, {
+      method: "DELETE",
+      headers: getAuthHeaders(),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "Failed to delete saved meal");
+    }
+    return res.json();
+  },
+
+  // 6. AI Natural Language Food Parser (Module 1)
+  parseFood: async (inputText) => {
+    const res = await fetch(`${API_BASE_URL}/api/ai/parse-food`, {
+      method: "POST",
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ input_text: inputText }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "Failed to parse natural language food text");
+    }
+    return res.json();
+  },
+
+  // 7. Pantry Full-Day Meal Planner (Module 4)
+  planPantryMeals: async (pantryPayload) => {
+    const res = await fetch(`${API_BASE_URL}/api/ai/pantry-planner`, {
+      method: "POST",
+      headers: getAuthHeaders(),
+      body: JSON.stringify(pantryPayload),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "Failed to generate pantry meal plan");
+    }
+    return res.json();
+  },
+
+  // 8. Gamification & Achievements (Module 3)
+  getBadges: async () => {
+    const res = await fetch(`${API_BASE_URL}/api/badges`, {
+      method: "GET",
+      headers: getAuthHeaders(),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "Failed to load achievements");
+    }
+    return res.json();
+  },
+
+  // AI meal suggestion (AI Strategist)
   getAiMealSuggestion: async (macroPayload) => {
-    // Safely map incoming variables to match backend Pydantic schema MealSuggestionRequest
     const mappedPayload = {
       calories: Math.round(Number(macroPayload.calories ?? macroPayload.remainingCalories ?? 0)),
       protein_g: Number(macroPayload.protein_g ?? macroPayload.protein ?? 0),
       carbs_g: Number(macroPayload.carbs_g ?? macroPayload.carbs ?? 0),
       fat_g: Number(macroPayload.fat_g ?? macroPayload.fat ?? 0),
       fitness_goals: macroPayload.fitness_goals || macroPayload.goals || "Hypertrophy",
+      prompt: macroPayload.prompt || macroPayload.aiPrompt || "",
     };
 
     const res = await fetch(`${API_BASE_URL}/api/ai/meal-suggestion`, {
