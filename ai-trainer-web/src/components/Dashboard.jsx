@@ -663,48 +663,48 @@ export default function Dashboard({ onLogout }) {
       <div className="absolute bottom-20 left-0 w-[700px] h-[700px] bg-cyan-500/10 blur-[140px] rounded-full pointer-events-none z-0" />
 
       {/* HEADER SECTION */}
-      <header className="border-b border-white/5 bg-slate-950/85 backdrop-blur-2xl sticky top-0 z-40 px-6 py-4">
-        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-          <div className="flex items-center gap-4">
-            <div className="w-11 h-11 rounded-2xl bg-gradient-to-tr from-blue-600 to-cyan-400 flex items-center justify-center font-black text-black text-xl italic tracking-tighter shadow-[0_0_25px_rgba(0,240,255,0.35)]">
+      <header className="border-b border-white/5 bg-slate-950/85 backdrop-blur-2xl sticky top-0 z-40 px-3.5 sm:px-6 py-3 sm:py-4">
+        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3.5 sm:gap-4">
+          <div className="flex items-center gap-3 sm:gap-4">
+            <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-2xl bg-gradient-to-tr from-blue-600 to-cyan-400 flex items-center justify-center font-black text-black text-lg sm:text-xl italic tracking-tighter shadow-[0_0_25px_rgba(0,240,255,0.35)] flex-shrink-0">
               AT
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <span className="text-[9px] font-black tracking-[0.25em] text-cyan-400 uppercase">
+                <span className="text-[8px] sm:text-[9px] font-black tracking-[0.25em] text-cyan-400 uppercase">
                   AURATRAINER // PERFORMANCE OS
                 </span>
                 <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping"></span>
               </div>
-              <h1 className="text-2xl font-black italic tracking-tighter uppercase leading-none mt-1">
+              <h1 className="text-xl sm:text-2xl font-black italic tracking-tighter uppercase leading-none mt-0.5 sm:mt-1">
                 WELCOME, <span className="text-transparent bg-clip-text bg-gradient-to-r from-blue-500 via-cyan-400 to-[#00F0FF]">{profile?.name || "ATHLETE"}</span>
               </h1>
             </div>
           </div>
 
           {/* Header Action Controls with Explicit LOG OUT Option */}
-          <div className="flex items-center gap-3 self-start sm:self-auto">
+          <div className="flex items-center justify-between sm:justify-end gap-2 w-full sm:w-auto flex-wrap sm:flex-nowrap">
             {/* Gamification Achievements Button */}
             <button
               onClick={() => setShowAchievements(true)}
-              className="flex items-center gap-2 px-3.5 py-2 bg-white/5 backdrop-blur-xl border border-white/10 hover:border-cyan-400 rounded-2xl text-xs font-black uppercase tracking-wider text-cyan-300 transition shadow-[0_0_15px_rgba(0,240,255,0.15)] cursor-pointer hover:scale-105 active:scale-95"
+              className="flex items-center gap-1.5 sm:gap-2 px-2.5 sm:px-3.5 py-2 bg-white/5 backdrop-blur-xl border border-white/10 hover:border-cyan-400 rounded-2xl text-[11px] sm:text-xs font-black uppercase tracking-wider text-cyan-300 transition shadow-[0_0_15px_rgba(0,240,255,0.15)] cursor-pointer hover:scale-105 active:scale-95"
             >
               <span>🏆</span>
-              <span className="hidden sm:inline">ACHIEVEMENTS</span>
+              <span className="inline">BADGES</span>
               <span className="px-1.5 py-0.5 rounded-full bg-cyan-950 border border-cyan-500/40 text-[9px] text-cyan-400 font-stats">
                 {unlockedBadgesCount}/{badges.length || 5}
               </span>
             </button>
 
             {/* Date Selector Navigation */}
-            <div className="flex items-center bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl px-3 py-1.5 shadow-inner">
+            <div className="flex items-center bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl px-2 sm:px-3 py-1 shadow-inner">
               <button
                 onClick={() => {
                   const prev = new Date(date);
                   prev.setDate(prev.getDate() - 1);
                   setDate(prev.toISOString().split("T")[0]);
                 }}
-                className="px-2 py-1 text-slate-400 hover:text-cyan-400 font-bold transition text-base cursor-pointer hover:scale-110 active:scale-90"
+                className="px-1.5 py-0.5 text-slate-400 hover:text-cyan-400 font-bold transition text-sm cursor-pointer hover:scale-110 active:scale-90"
                 title="Previous Day"
               >
                 ←
@@ -713,7 +713,7 @@ export default function Dashboard({ onLogout }) {
                 type="date"
                 value={date}
                 onChange={(e) => setDate(e.target.value)}
-                className="bg-transparent text-xs font-black tracking-widest text-slate-100 focus:outline-none uppercase px-3 cursor-pointer text-center"
+                className="bg-transparent text-[11px] sm:text-xs font-black tracking-wider text-slate-100 focus:outline-none uppercase px-1.5 sm:px-3 cursor-pointer text-center max-w-[125px] sm:max-w-none"
               />
               <button
                 onClick={() => {
@@ -721,7 +721,7 @@ export default function Dashboard({ onLogout }) {
                   next.setDate(next.getDate() + 1);
                   setDate(next.toISOString().split("T")[0]);
                 }}
-                className="px-2 py-1 text-slate-400 hover:text-cyan-400 font-bold transition text-base cursor-pointer hover:scale-110 active:scale-90"
+                className="px-1.5 py-0.5 text-slate-400 hover:text-cyan-400 font-bold transition text-sm cursor-pointer hover:scale-110 active:scale-90"
                 title="Next Day"
               >
                 →
@@ -732,7 +732,7 @@ export default function Dashboard({ onLogout }) {
             {onLogout && (
               <button
                 onClick={onLogout}
-                className="px-3.5 py-2 bg-red-950/40 hover:bg-red-900/60 border border-red-500/30 hover:border-red-500 text-red-300 hover:text-white rounded-2xl text-[10px] font-black tracking-wider uppercase transition duration-200 cursor-pointer shadow-[0_0_12px_rgba(255,59,48,0.15)] hover:scale-105 active:scale-95 flex items-center gap-1.5"
+                className="px-2.5 sm:px-3.5 py-2 bg-red-950/40 hover:bg-red-900/60 border border-red-500/30 hover:border-red-500 text-red-300 hover:text-white rounded-2xl text-[10px] font-black tracking-wider uppercase transition duration-200 cursor-pointer shadow-[0_0_12px_rgba(255,59,48,0.15)] hover:scale-105 active:scale-95 flex items-center gap-1"
                 title="Sign out of your athlete session"
               >
                 <span>LOG OUT</span>
@@ -744,14 +744,14 @@ export default function Dashboard({ onLogout }) {
       </header>
 
       {error && (
-        <div className="max-w-7xl mx-auto px-6 mt-4">
-          <div className="p-4 bg-red-950/40 border-l-4 border-red-500 text-red-200 text-xs font-bold rounded-r-xl uppercase tracking-wider backdrop-blur-md">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 mt-4">
+          <div className="p-3.5 sm:p-4 bg-red-950/40 border-l-4 border-red-500 text-red-200 text-xs font-bold rounded-r-xl uppercase tracking-wider backdrop-blur-md">
             {error}
           </div>
         </div>
       )}
 
-      <main className="max-w-7xl mx-auto px-6 mt-8 relative z-10 grid grid-cols-1 lg:grid-cols-12 gap-8">
+      <main className="max-w-7xl mx-auto px-4 sm:px-6 mt-6 sm:mt-8 relative z-10 grid grid-cols-1 lg:grid-cols-12 gap-6 sm:gap-8">
         
         {/* LEFT COLUMN: TRAINERS, HABITS & APPLE MACRO RINGS (8 COLS) */}
         <div className="lg:col-span-8 space-y-8">
@@ -1058,26 +1058,26 @@ export default function Dashboard({ onLogout }) {
           </section>
 
           {/* 3. APPLE-INSPIRED CONCENTRIC MACRO ACTIVITY TRACKER */}
-          <section className="bg-slate-900/70 backdrop-blur-xl border border-white/10 rounded-3xl p-6 sm:p-8 shadow-2xl hover:border-cyan-500/30 transition-all duration-300">
-            <div className="flex items-center justify-between mb-6">
+          <section className="bg-slate-900/70 backdrop-blur-xl border border-white/10 rounded-3xl p-4 sm:p-8 shadow-2xl hover:border-cyan-500/30 transition-all duration-300">
+            <div className="flex items-center justify-between mb-4 sm:mb-6">
               <div>
-                <span className="text-[9px] font-black tracking-[0.25em] text-cyan-400 uppercase">
+                <span className="text-[8px] sm:text-[9px] font-black tracking-[0.25em] text-cyan-400 uppercase">
                   APPLE ACTIVITY RINGS // PRECISION METRICS
                 </span>
-                <h2 className="text-xl font-black italic tracking-tighter uppercase mt-0.5">
+                <h2 className="text-lg sm:text-xl font-black italic tracking-tighter uppercase mt-0.5">
                   MACRONUTRIENT BALANCE
                 </h2>
               </div>
-              <span className="text-[10px] font-bold tracking-wider text-slate-400 bg-white/5 border border-white/10 px-3 py-1 rounded-full font-stats">
+              <span className="text-[9px] sm:text-[10px] font-bold tracking-wider text-slate-400 bg-white/5 border border-white/10 px-2.5 sm:px-3 py-1 rounded-full font-stats">
                 {consumed.calories} / {targetCalories} KCAL
               </span>
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
+            <div className="grid grid-cols-1 md:grid-cols-12 gap-6 sm:gap-8 items-center">
               
               {/* Apple Concentric 4-Ring Activity SVG */}
-              <div className="lg:col-span-5 flex flex-col items-center justify-center relative">
-                <div className="relative w-64 h-64 flex items-center justify-center">
+              <div className="md:col-span-5 flex flex-col items-center justify-center relative">
+                <div className="relative w-52 h-52 sm:w-64 sm:h-64 flex items-center justify-center">
                   <svg className="w-full h-full transform -rotate-90" viewBox="0 0 240 240">
                     <defs>
                       {/* Calories / Move Gradient (Apple Red/Pink) */}
@@ -1193,7 +1193,7 @@ export default function Dashboard({ onLogout }) {
               </div>
 
               {/* Apple Health Metric Cards & Progress Bars */}
-              <div className="lg:col-span-7 grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+              <div className="md:col-span-7 grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-3.5">
                 
                 {/* 1. Calories Card (Apple Red) */}
                 <div className="p-4 rounded-2xl bg-black/60 border border-[#FA114F]/30 shadow-[0_0_20px_rgba(250,17,79,0.1)] flex flex-col justify-between">
