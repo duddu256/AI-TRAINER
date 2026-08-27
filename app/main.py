@@ -159,11 +159,28 @@ async def login_user(user: UserAuth):
         response = supabase_auth.auth.sign_in_with_password({"email": user.email, "password": user.password})
         return {
             "access_token": response.session.access_token,
+            "refresh_token": getattr(response.session, "refresh_token", None),
             "token_type": "bearer",
             "user": {"id": response.user.id, "email": response.user.email}
         }
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
+
+class TokenRefreshRequest(BaseModel):
+    refresh_token: str
+
+@app.post("/api/auth/refresh")
+async def refresh_session(req: TokenRefreshRequest):
+    try:
+        response = supabase_auth.auth.refresh_session(req.refresh_token)
+        return {
+            "access_token": response.session.access_token,
+            "refresh_token": getattr(response.session, "refresh_token", None),
+            "token_type": "bearer",
+            "user": {"id": response.user.id, "email": response.user.email}
+        }
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Token refresh failed: {str(e)}")
 
 @app.post("/api/profile")
 async def save_user_profile(profile_data: ProfileOnboarding, current_user = Depends(get_current_user)):
@@ -238,14 +255,15 @@ async def get_workouts_by_split(
     elif clean_split in ("REST", "RECOVERY"):
         clean_split = "REST / RECOVERY"
 
-    if clean_split in splits_catalog:
-        return splits_catalog[clean_split]
-
-    # Check custom user splits
+    # 1. Check custom user splits FIRST so all user-added exercises are returned!
     custom_splits = get_user_custom_splits(current_user.id)
     for s_name, exercises in custom_splits.items():
         if s_name.upper().strip() == clean_split:
             return exercises
+
+    # 2. Fallback to standard catalog if user hasn't customized this split
+    if clean_split in splits_catalog:
+        return splits_catalog[clean_split]
 
     return []
 

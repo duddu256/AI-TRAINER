@@ -3,7 +3,6 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import LoginRegister from "./components/LoginRegister";
 import Onboarding from "./components/Onboarding";
 import Dashboard from "./components/Dashboard";
-import LandingHero from "./components/LandingHero";
 import { api } from "./services/api";
 
 function AuthGuard({ children, token, handleLogout, needsOnboarding, handleAuthSuccess, handleOnboardingDone, loading }) {
@@ -26,19 +25,7 @@ function AuthGuard({ children, token, handleLogout, needsOnboarding, handleAuthS
     return <Onboarding onOnboardingComplete={handleOnboardingDone} />;
   }
 
-  return (
-    <div className="relative min-h-screen bg-slate-950">
-      <div className="fixed top-4 right-6 z-50">
-        <button
-          onClick={handleLogout}
-          className="px-3.5 py-1.5 bg-slate-900/90 backdrop-blur-md border border-slate-800 text-slate-400 hover:text-red-400 hover:border-red-900/50 text-[10px] font-black tracking-widest uppercase rounded-xl transition shadow-lg cursor-pointer"
-        >
-          DISCONNECT CONSOLE ⏻
-        </button>
-      </div>
-      {children}
-    </div>
-  );
+  return children;
 }
 
 export default function App() {
@@ -91,10 +78,7 @@ export default function App() {
   return (
     <BrowserRouter>
       <Routes>
-        {/* Landing Page */}
-        <Route path="/" element={<LandingHero />} />
-        
-        {/* Authenticated Routes */}
+        {/* All routes start directly with AuthGuard (Login -> Onboarding -> Dashboard) */}
         <Route
           path="/*"
           element={
@@ -107,8 +91,8 @@ export default function App() {
               loading={loading}
             >
               <Routes>
-                <Route path="/dashboard" element={<Dashboard />} />
-                {/* Placeholders for new pages, redirect to dashboard for now */}
+                <Route path="/" element={<Dashboard onLogout={handleLogout} />} />
+                <Route path="/dashboard" element={<Dashboard onLogout={handleLogout} />} />
                 <Route path="/food-log" element={<Navigate to="/dashboard" replace />} />
                 <Route path="/workouts" element={<Navigate to="/dashboard" replace />} />
                 <Route path="/pantry-ai" element={<Navigate to="/dashboard" replace />} />

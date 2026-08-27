@@ -177,6 +177,24 @@ def get_user_custom_splits(user_id: str) -> Dict[str, List[Dict[str, Any]]]:
         print(f"[VectorMemoryService] Supabase custom_splits fallback: {e}")
 
     return _CUSTOM_SPLITS_STORE.get(user_id, {
+        "PUSH DAY": [
+            {"name": "Incline Barbell Bench Press", "sets": 4, "reps": "8-10", "weight": "60-80kg"},
+            {"name": "Dumbbell Overhead Shoulder Press", "sets": 3, "reps": "10-12", "weight": "20kg each"},
+            {"name": "Cable Pec Flyes", "sets": 3, "reps": "12-15", "weight": "15kg each"},
+            {"name": "Tricep Overhead Rope Pullovers", "sets": 4, "reps": "12", "weight": "25kg"}
+        ],
+        "PULL DAY": [
+            {"name": "Deadlift / Bent-Over Rows", "sets": 4, "reps": "6-8", "weight": "100kg / 70kg"},
+            {"name": "Wide Grip Pull-Ups", "sets": 3, "reps": "Bodyweight MAX", "weight": "0kg"},
+            {"name": "Seated Hammer Strength Cable Rows", "sets": 3, "reps": "10", "weight": "45kg"},
+            {"name": "Incline Dumbbell Hammer Curls", "sets": 3, "reps": "12", "weight": "12.5kg each"}
+        ],
+        "LEG DAY": [
+            {"name": "Barbell Back Squats", "sets": 4, "reps": "6-8", "weight": "80-110kg"},
+            {"name": "Romanian Dumbbell Deadlifts", "sets": 3, "reps": "10", "weight": "30kg each"},
+            {"name": "Standing Calf Raises", "sets": 4, "reps": "15-20", "weight": "40kg"},
+            {"name": "Hanging Knee Raises (Abs)", "sets": 3, "reps": "15", "weight": "Bodyweight"}
+        ],
         "CUSTOM PUSH (HEAVY)": [
             {"name": "Flat Barbell Bench Press", "sets": 4, "reps": "5", "weight": "85-100kg"},
             {"name": "Seated Dumbbell Shoulder Press", "sets": 4, "reps": "8-10", "weight": "24kg each"},

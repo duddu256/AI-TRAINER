@@ -9,6 +9,47 @@ const getAuthHeaders = () => {
   };
 };
 
+// Resilient authenticated fetch with transparent token refresh
+const authFetch = async (url, options = {}) => {
+  let headers = {
+    ...getAuthHeaders(),
+    ...(options.headers || {}),
+  };
+
+  let response = await fetch(url, { ...options, headers });
+
+  // If unauthorized and we have a refresh token, attempt automatic silent session refresh
+  if (response.status === 401) {
+    const refreshToken = localStorage.getItem("refreshToken");
+    if (refreshToken) {
+      try {
+        const refreshRes = await fetch(`${API_BASE_URL}/api/auth/refresh`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ refresh_token: refreshToken }),
+        });
+
+        if (refreshRes.ok) {
+          const refreshData = await refreshRes.json();
+          if (refreshData.access_token) {
+            localStorage.setItem("token", refreshData.access_token);
+            if (refreshData.refresh_token) {
+              localStorage.setItem("refreshToken", refreshData.refresh_token);
+            }
+            // Retry original request with fresh token
+            headers["Authorization"] = `Bearer ${refreshData.access_token}`;
+            response = await fetch(url, { ...options, headers });
+          }
+        }
+      } catch (refreshErr) {
+        console.warn("Silent session refresh failed:", refreshErr);
+      }
+    }
+  }
+
+  return response;
+};
+
 export const api = {
   // 1. Auth Operations
   register: async (email, password) => {
@@ -38,6 +79,9 @@ export const api = {
     if (data.access_token) {
       localStorage.setItem("token", data.access_token);
     }
+    if (data.refresh_token) {
+      localStorage.setItem("refreshToken", data.refresh_token);
+    }
     if (data.user && data.user.email) {
       localStorage.setItem("userEmail", data.user.email);
     }
@@ -46,14 +90,16 @@ export const api = {
 
   logout: () => {
     localStorage.removeItem("token");
+    localStorage.removeItem("refreshToken");
     localStorage.removeItem("userEmail");
+    localStorage.removeItem("stayLoggedIn");
+    sessionStorage.clear();
   },
 
   // 2. Profile Details
   saveProfile: async (profileData) => {
-    const res = await fetch(`${API_BASE_URL}/api/profile`, {
+    const res = await authFetch(`${API_BASE_URL}/api/profile`, {
       method: "POST",
-      headers: getAuthHeaders(),
       body: JSON.stringify(profileData),
     });
     if (!res.ok) {
@@ -64,9 +110,8 @@ export const api = {
   },
 
   getProfile: async () => {
-    const res = await fetch(`${API_BASE_URL}/api/profile`, {
+    const res = await authFetch(`${API_BASE_URL}/api/profile`, {
       method: "GET",
-      headers: getAuthHeaders(),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -77,9 +122,8 @@ export const api = {
 
   // 3. Daily Logs & Habit Tracker Data
   getDailyLog: async (dateStr) => {
-    const res = await fetch(`${API_BASE_URL}/api/logs/daily?date=${dateStr}`, {
+    const res = await authFetch(`${API_BASE_URL}/api/logs/daily?date=${dateStr}`, {
       method: "GET",
-      headers: getAuthHeaders(),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -89,9 +133,8 @@ export const api = {
   },
 
   updateTrackers: async (trackerData) => {
-    const res = await fetch(`${API_BASE_URL}/api/logs/trackers`, {
+    const res = await authFetch(`${API_BASE_URL}/api/logs/trackers`, {
       method: "POST",
-      headers: getAuthHeaders(),
       body: JSON.stringify(trackerData),
     });
     if (!res.ok) {
@@ -102,9 +145,8 @@ export const api = {
   },
 
   logMeal: async (mealData) => {
-    const res = await fetch(`${API_BASE_URL}/api/logs/meals`, {
+    const res = await authFetch(`${API_BASE_URL}/api/logs/meals`, {
       method: "POST",
-      headers: getAuthHeaders(),
       body: JSON.stringify(mealData),
     });
     if (!res.ok) {
@@ -116,12 +158,9 @@ export const api = {
 
   // 4. Workout Engine & Vector Progressive Overload (Module 2)
   getWorkoutsBySplit: async (splitName) => {
-    const res = await fetch(
+    const res = await authFetch(
       `${API_BASE_URL}/api/workouts?split=${encodeURIComponent(splitName)}`,
-      {
-        method: "GET",
-        headers: getAuthHeaders(),
-      }
+      { method: "GET" }
     );
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -131,12 +170,9 @@ export const api = {
   },
 
   getProgressionTarget: async (exerciseName) => {
-    const res = await fetch(
+    const res = await authFetch(
       `${API_BASE_URL}/api/workouts/progression-target?exercise_name=${encodeURIComponent(exerciseName)}`,
-      {
-        method: "GET",
-        headers: getAuthHeaders(),
-      }
+      { method: "GET" }
     );
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -146,9 +182,8 @@ export const api = {
   },
 
   recordWorkoutPerformance: async (performanceData) => {
-    const res = await fetch(`${API_BASE_URL}/api/workouts/record-performance`, {
+    const res = await authFetch(`${API_BASE_URL}/api/workouts/record-performance`, {
       method: "POST",
-      headers: getAuthHeaders(),
       body: JSON.stringify(performanceData),
     });
     if (!res.ok) {
@@ -159,9 +194,8 @@ export const api = {
   },
 
   getCustomSplits: async () => {
-    const res = await fetch(`${API_BASE_URL}/api/workouts/custom-splits`, {
+    const res = await authFetch(`${API_BASE_URL}/api/workouts/custom-splits`, {
       method: "GET",
-      headers: getAuthHeaders(),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -171,9 +205,8 @@ export const api = {
   },
 
   saveCustomSplits: async (splitsData) => {
-    const res = await fetch(`${API_BASE_URL}/api/workouts/custom-splits`, {
+    const res = await authFetch(`${API_BASE_URL}/api/workouts/custom-splits`, {
       method: "POST",
-      headers: getAuthHeaders(),
       body: JSON.stringify(splitsData),
     });
     if (!res.ok) {
@@ -183,77 +216,10 @@ export const api = {
     return res.json();
   },
 
-  // 5. Saved Meals CRUD (Module 1)
-  getSavedMeals: async () => {
-    const res = await fetch(`${API_BASE_URL}/api/saved-meals`, {
-      method: "GET",
-      headers: getAuthHeaders(),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.detail || "Failed to load saved meals");
-    }
-    return res.json();
-  },
-
-  saveMeal: async (mealData) => {
-    const res = await fetch(`${API_BASE_URL}/api/saved-meals`, {
-      method: "POST",
-      headers: getAuthHeaders(),
-      body: JSON.stringify(mealData),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.detail || "Failed to save meal template");
-    }
-    return res.json();
-  },
-
-  deleteSavedMeal: async (mealId) => {
-    const res = await fetch(`${API_BASE_URL}/api/saved-meals/${mealId}`, {
-      method: "DELETE",
-      headers: getAuthHeaders(),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.detail || "Failed to delete saved meal");
-    }
-    return res.json();
-  },
-
-  // 6. AI Natural Language Food Parser (Module 1)
-  parseFood: async (inputText) => {
-    const res = await fetch(`${API_BASE_URL}/api/ai/parse-food`, {
-      method: "POST",
-      headers: getAuthHeaders(),
-      body: JSON.stringify({ input_text: inputText }),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.detail || "Failed to parse natural language food text");
-    }
-    return res.json();
-  },
-
-  // 7. Pantry Full-Day Meal Planner (Module 4)
-  planPantryMeals: async (pantryPayload) => {
-    const res = await fetch(`${API_BASE_URL}/api/ai/pantry-planner`, {
-      method: "POST",
-      headers: getAuthHeaders(),
-      body: JSON.stringify(pantryPayload),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(err.detail || "Failed to generate pantry meal plan");
-    }
-    return res.json();
-  },
-
-  // 8. Gamification & Achievements (Module 3)
+  // 5. Gamification & Badges (Module 3)
   getBadges: async () => {
-    const res = await fetch(`${API_BASE_URL}/api/badges`, {
+    const res = await authFetch(`${API_BASE_URL}/api/badges`, {
       method: "GET",
-      headers: getAuthHeaders(),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -262,25 +228,76 @@ export const api = {
     return res.json();
   },
 
-  // AI meal suggestion (AI Strategist)
-  getAiMealSuggestion: async (macroPayload) => {
-    const mappedPayload = {
-      calories: Math.round(Number(macroPayload.calories ?? macroPayload.remainingCalories ?? 0)),
-      protein_g: Number(macroPayload.protein_g ?? macroPayload.protein ?? 0),
-      carbs_g: Number(macroPayload.carbs_g ?? macroPayload.carbs ?? 0),
-      fat_g: Number(macroPayload.fat_g ?? macroPayload.fat ?? 0),
-      fitness_goals: macroPayload.fitness_goals || macroPayload.goals || "Hypertrophy",
-      prompt: macroPayload.prompt || macroPayload.aiPrompt || "",
-    };
-
-    const res = await fetch(`${API_BASE_URL}/api/ai/meal-suggestion`, {
+  // 6. AI Strategic & Natural Language Services (Module 1 & 4)
+  parseFood: async (inputText) => {
+    const res = await authFetch(`${API_BASE_URL}/api/ai/parse-food`, {
       method: "POST",
-      headers: getAuthHeaders(),
-      body: JSON.stringify(mappedPayload),
+      body: JSON.stringify({ input_text: inputText }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      throw new Error(err.detail || "AI failed to compile suggestions");
+      throw new Error(err.detail || "AI failed to parse food text");
+    }
+    return res.json();
+  },
+  parseFoodText: async (inputText) => api.parseFood(inputText),
+
+  getAiMealSuggestion: async (suggestionRequest) => {
+    const res = await authFetch(`${API_BASE_URL}/api/ai/meal-suggestion`, {
+      method: "POST",
+      body: JSON.stringify(suggestionRequest),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "AI meal suggestion failed");
+    }
+    return res.json();
+  },
+
+  planPantryMeals: async (pantryRequest) => {
+    const res = await authFetch(`${API_BASE_URL}/api/ai/pantry-planner`, {
+      method: "POST",
+      body: JSON.stringify(pantryRequest),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "Pantry planner AI failed");
+    }
+    return res.json();
+  },
+
+  // 7. Custom Saved Meals Operations (Module 1)
+  getSavedMeals: async () => {
+    const res = await authFetch(`${API_BASE_URL}/api/saved-meals`, {
+      method: "GET",
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "Failed to fetch saved meals");
+    }
+    return res.json();
+  },
+
+  saveMeal: async (mealData) => {
+    const res = await authFetch(`${API_BASE_URL}/api/saved-meals`, {
+      method: "POST",
+      body: JSON.stringify(mealData),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "Failed to save meal template");
+    }
+    return res.json();
+  },
+  createSavedMeal: async (mealData) => api.saveMeal(mealData),
+
+  deleteSavedMeal: async (savedMealId) => {
+    const res = await authFetch(`${API_BASE_URL}/api/saved-meals/${savedMealId}`, {
+      method: "DELETE",
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "Failed to delete saved meal");
     }
     return res.json();
   },
