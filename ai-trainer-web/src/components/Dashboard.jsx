@@ -461,9 +461,9 @@ export default function Dashboard() {
   const waterPercent = Math.min(100, ((log.water_intake_ml || 0) / targetWater) * 100);
   const stepsPercent = Math.min(100, ((log.steps || 0) / targetSteps) * 100);
 
-  // Legacy AI Diet Recommendation inquiry
+  // AI Strategist Meal Synthesis inquiry
   const handleAiInquiry = async (e) => {
-    e.preventDefault();
+    if (e && e.preventDefault) e.preventDefault();
     setAiLoading(true);
     setAiResponse(null);
 
@@ -474,11 +474,12 @@ export default function Dashboard() {
         carbs_g: remainingCarbs > 0 ? remainingCarbs : 45,
         fat_g: remainingFat > 0 ? remainingFat : 12,
         fitness_goals: profile?.fitness_goals || "Hypertrophy",
+        prompt: aiPrompt,
       });
       setAiResponse(suggestion);
     } catch (err) {
       console.error("AI service error:", err);
-      setError("AI SERVICE COMPILATION ENCOUNTERED AN ISSUE.");
+      setError("AI SERVICE COMPILATION ENCOUNTERED AN ISSUE. PLEASE TRY AGAIN.");
     } finally {
       setAiLoading(false);
     }
@@ -490,10 +491,10 @@ export default function Dashboard() {
     const mealPayload = {
       date: date,
       name: `AI REC: ${aiResponse.name.toUpperCase()}`,
-      calories: aiResponse.calories,
-      protein_g: aiResponse.protein,
-      carbs_g: aiResponse.carbs,
-      fat_g: aiResponse.fat,
+      calories: Math.round(Number(aiResponse.calories)),
+      protein_g: Number(aiResponse.protein_g ?? aiResponse.protein ?? 0),
+      carbs_g: Number(aiResponse.carbs_g ?? aiResponse.carbs ?? 0),
+      fat_g: Number(aiResponse.fat_g ?? aiResponse.fat ?? 0),
       logged_at: loggedAtTime,
     };
 
@@ -505,6 +506,7 @@ export default function Dashboard() {
       await loadDashboardData(date);
     } catch (err) {
       console.error("Failed to append AI meal:", err);
+      setError("FAILED TO LOG AI RECIPE MEAL.");
     }
   };
 
@@ -1307,49 +1309,120 @@ export default function Dashboard() {
             {/* TAB 1: AI STRATEGIST */}
             {activeAiTab === "STRATEGIST" && (
               <div className="space-y-4">
+                {/* Target Macro Pills */}
+                <div className="flex flex-wrap items-center gap-2 p-2.5 bg-black/60 border border-slate-900 rounded-2xl">
+                  <span className="text-[9px] font-black text-slate-400 uppercase tracking-wider">TARGETS:</span>
+                  <span className="text-[10px] font-bold text-cyan-300 bg-cyan-950/50 border border-cyan-500/20 px-2 py-0.5 rounded-lg">
+                    {remainingProtein.toFixed(0)}g P
+                  </span>
+                  <span className="text-[10px] font-bold text-blue-300 bg-blue-950/50 border border-blue-500/20 px-2 py-0.5 rounded-lg">
+                    {remainingCarbs.toFixed(0)}g C
+                  </span>
+                  <span className="text-[10px] font-bold text-indigo-300 bg-indigo-950/50 border border-indigo-500/20 px-2 py-0.5 rounded-lg">
+                    {remainingFat.toFixed(0)}g F
+                  </span>
+                  <span className="text-[10px] font-black text-white bg-slate-900 px-2 py-0.5 rounded-lg">
+                    {remainingCalories.toFixed(0)} KCAL
+                  </span>
+                </div>
+
                 <form onSubmit={handleAiInquiry} className="space-y-3">
-                  <p className="text-[10px] font-bold text-slate-400 uppercase leading-relaxed">
-                    SYNTHESIZE MEAL PROTOCOLS TARGETED TO YOUR REMAINING {remainingProtein.toFixed(0)}G PROTEIN GOAL:
-                  </p>
+                  <div className="flex items-center justify-between">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase leading-relaxed">
+                      SYNTHESIZE MEAL PROTOCOL FOR {profile?.fitness_goals?.toUpperCase() || "HYPERTROPHY"}:
+                    </p>
+                    {aiPrompt && (
+                      <button
+                        type="button"
+                        onClick={() => setAiPrompt("")}
+                        className="text-[9px] text-slate-500 hover:text-slate-300 uppercase cursor-pointer"
+                      >
+                        Clear
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Preset prompt pills */}
+                  <div className="flex flex-wrap gap-1.5">
+                    {[
+                      { label: "⚡ Shake", prompt: "Quick high-protein whey recovery shake with banana and oats" },
+                      { label: "🍗 Chicken & Rice", prompt: "Garlic herb seared chicken breast with jasmine rice & steamed broccoli" },
+                      { label: "🐟 Salmon & Sweet Potato", prompt: "Pan-seared crisp salmon fillet with roasted sweet potato cubes" },
+                      { label: "🍳 Egg Scramble", prompt: "Egg white and spinach scramble with artisanal sourdough toast" },
+                      { label: "🌱 Vegan Tofu Bowl", prompt: "Crispy golden tofu and quinoa high-protein vegan power bowl" },
+                      { label: "🥩 Lean Steak Hash", prompt: "Lean angus beef and golden potato power hash" },
+                    ].map((pill, idx) => (
+                      <button
+                        key={idx}
+                        type="button"
+                        onClick={() => setAiPrompt(pill.prompt)}
+                        className={`px-2.5 py-1 rounded-lg text-[9px] font-bold uppercase transition cursor-pointer border ${
+                          aiPrompt === pill.prompt
+                            ? "bg-cyan-950 border-cyan-400 text-cyan-300"
+                            : "bg-[#101015] border-slate-800 text-slate-400 hover:text-slate-200 hover:border-slate-700"
+                        }`}
+                      >
+                        {pill.label}
+                      </button>
+                    ))}
+                  </div>
+
                   <textarea
                     value={aiPrompt}
                     onChange={(e) => setAiPrompt(e.target.value)}
                     rows="2"
                     className="w-full p-3.5 bg-black border border-slate-900 rounded-2xl text-xs text-slate-200 focus:outline-none focus:border-cyan-400 placeholder-slate-700 font-medium"
-                    placeholder="E.G., 'QUICK POST-WORKOUT MEAL WITH HIGH PROTEIN'..."
+                    placeholder="Describe desired meal (e.g. 'Pan-seared salmon with sweet potato' or 'Quick 40g protein recovery shake')..."
                   />
+                  
                   <button
                     type="submit"
                     disabled={aiLoading}
-                    className="w-full py-3 bg-white text-black font-black text-[10px] tracking-[0.25em] uppercase rounded-2xl transition hover:bg-slate-200 cursor-pointer shadow-[0_0_15px_rgba(255,255,255,0.15)] disabled:opacity-50"
+                    className="w-full py-3 bg-white text-black font-black text-[10px] tracking-[0.25em] uppercase rounded-2xl transition hover:bg-slate-200 cursor-pointer shadow-[0_0_15px_rgba(255,255,255,0.15)] disabled:opacity-50 flex items-center justify-center gap-2"
                   >
-                    {aiLoading ? "SYNTHESIZING PROTOCOL..." : "EXECUTE AI QUERY →"}
+                    {aiLoading ? (
+                      <>
+                        <span className="w-3.5 h-3.5 border-2 border-black border-t-transparent rounded-full animate-spin"></span>
+                        SYNTHESIZING PROTOCOL...
+                      </>
+                    ) : (
+                      "EXECUTE AI QUERY →"
+                    )}
                   </button>
                 </form>
 
                 {aiResponse && (
-                  <div className="mt-4 p-4 bg-black border border-cyan-500/40 rounded-2xl space-y-3 shadow-[0_0_20px_rgba(0,240,255,0.1)] relative">
+                  <div className="mt-4 p-4 bg-black border border-cyan-500/40 rounded-2xl space-y-3 shadow-[0_0_20px_rgba(0,240,255,0.1)] relative animate-fadeIn">
                     <div>
                       <span className="text-[8px] font-black tracking-[0.2em] text-cyan-400 uppercase bg-cyan-950/40 border border-cyan-500/30 px-2 py-0.5 rounded">
-                        SYNTHESIZED RECIPE
+                        SYNTHESIZED RECIPE PROTOCOL
                       </span>
                       <h4 className="font-black text-sm uppercase text-white mt-1.5">{aiResponse.name}</h4>
-                      <div className="flex gap-3 text-[10px] text-slate-400 font-bold uppercase mt-1">
-                        <span>P: <span className="text-cyan-400">{aiResponse.protein}G</span></span>
-                        <span>C: <span className="text-blue-400">{aiResponse.carbs}G</span></span>
-                        <span>F: <span className="text-indigo-400">{aiResponse.fat}G</span></span>
-                        <span className="text-white font-black">{aiResponse.calories} KCAL</span>
+                      <div className="flex flex-wrap gap-2.5 text-[10px] text-slate-400 font-bold uppercase mt-2">
+                        <span className="bg-[#121218] px-2 py-1 rounded-md border border-slate-800">
+                          PROTEIN: <span className="text-cyan-400 font-black">{aiResponse.protein_g ?? aiResponse.protein}G</span>
+                        </span>
+                        <span className="bg-[#121218] px-2 py-1 rounded-md border border-slate-800">
+                          CARBS: <span className="text-blue-400 font-black">{aiResponse.carbs_g ?? aiResponse.carbs}G</span>
+                        </span>
+                        <span className="bg-[#121218] px-2 py-1 rounded-md border border-slate-800">
+                          FAT: <span className="text-indigo-400 font-black">{aiResponse.fat_g ?? aiResponse.fat}G</span>
+                        </span>
+                        <span className="bg-white/10 px-2 py-1 rounded-md text-white font-black">
+                          {aiResponse.calories} KCAL
+                        </span>
                       </div>
                     </div>
 
-                    <div className="text-[11px] text-slate-300 leading-relaxed border-t border-[#14141c] pt-2">
+                    <div className="text-[11px] text-slate-300 leading-relaxed border-t border-[#14141c] pt-2.5">
+                      <p className="text-[9px] font-black uppercase text-slate-500 mb-1">Preparation Instructions:</p>
                       {aiResponse.instructions}
                     </div>
 
                     <button
                       type="button"
                       onClick={handleAddAiMealToLog}
-                      className="w-full py-2.5 bg-gradient-to-r from-[#0052FF] to-[#00F0FF] text-black font-black text-[10px] tracking-[0.2em] uppercase rounded-xl transition shadow-[0_0_15px_rgba(0,240,255,0.3)] cursor-pointer"
+                      className="w-full py-2.5 bg-gradient-to-r from-[#0052FF] to-[#00F0FF] text-black font-black text-[10px] tracking-[0.2em] uppercase rounded-xl transition shadow-[0_0_15px_rgba(0,240,255,0.3)] hover:brightness-110 cursor-pointer"
                     >
                       APPEND TO DIET LOG
                     </button>
