@@ -50,14 +50,14 @@ export default function LoginRegister({ onAuthSuccess }) {
 
       {/* Main Glass/Charcoal Card */}
       <div className="w-full max-w-md bg-[#0a0a0c] border border-[#1a1a24] rounded-3xl p-8 sm:p-10 shadow-[0_0_60px_rgba(0,82,255,0.12)] relative z-10">
-        
+
         {/* Athletic Badge & Title */}
         <div className="text-center mb-8">
           <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-cyan-950/40 border border-cyan-500/30 text-cyan-400 text-[10px] font-black tracking-[0.25em] uppercase shadow-[0_0_12px_rgba(0,240,255,0.15)]">
             <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-ping"></span>
             AURATRAINER // PERFORMANCE OS
           </div>
-          
+
           <h1 className="text-4xl sm:text-5xl font-black italic tracking-tighter text-white mt-5 uppercase leading-none">
             {isLogin ? (
               <>
@@ -75,7 +75,7 @@ export default function LoginRegister({ onAuthSuccess }) {
               </>
             )}
           </h1>
-          
+
           <p className="text-slate-500 mt-3 text-xs font-semibold uppercase tracking-wider">
             {isLogin
               ? "AUTHENTICATE TO ACCESS YOUR TRAINING & DIET PROTOCOLS"
