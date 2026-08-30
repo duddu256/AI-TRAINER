@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Depends, status, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 from app.services.supabase_client import supabase_auth, supabase_db
 from app.services.ai_service import (
     parse_food_string,
@@ -71,7 +71,7 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
 # --- SCHEMAS ---
 
 class UserAuth(BaseModel):
-    email: EmailStr
+    email: str
     password: str
 
 class ProfileOnboarding(BaseModel):
