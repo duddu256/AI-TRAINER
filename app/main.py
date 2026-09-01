@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Depends, status, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 from app.services.supabase_client import supabase_auth, supabase_db
 from app.services.ai_service import (
     parse_food_string,
@@ -31,7 +31,7 @@ app = FastAPI(
     description="Advanced AI-Automated Athletic Training Engine with Vector Overload Memory and Gamification"
 )
 
-# Allowed origins for CORS (Local development, Vercel deployments, and wildcard support)
+# Allowed origins for CORS (Local development & Vercel deployments)
 origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
@@ -41,7 +41,6 @@ origins = [
     "http://127.0.0.1:8080",
     "http://localhost:5174",
     "http://127.0.0.1:5174",
-    "*",
 ]
 
 app.add_middleware(
@@ -71,7 +70,7 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
 # --- SCHEMAS ---
 
 class UserAuth(BaseModel):
-    email: EmailStr
+    email: str
     password: str
 
 class ProfileOnboarding(BaseModel):
@@ -143,6 +142,17 @@ class PantryPlannerRequest(BaseModel):
     meal_count: int = 3
     body_type: Optional[str] = "Mesomorph"
     fitness_goals: Optional[str] = "Hypertrophy"
+
+# --- HEALTH CHECK & ROOT ROUTES ---
+
+@app.get("/")
+@app.get("/health")
+async def health_check():
+    return {
+        "status": "online",
+        "service": "AuraTrainer Core Backend",
+        "version": "Phase 2 MVP"
+    }
 
 # --- CORE USER ROUTES ---
 
