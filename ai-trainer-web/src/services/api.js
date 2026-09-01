@@ -1,5 +1,9 @@
 const rawApiUrl = import.meta.env.VITE_API_URL || "http://localhost:8000";
-const API_BASE_URL = rawApiUrl.replace(/\/+$/, "");
+let sanitizedUrl = rawApiUrl.trim().replace(/\/+$/, "");
+if (sanitizedUrl.endsWith("/api")) {
+  sanitizedUrl = sanitizedUrl.slice(0, -4);
+}
+const API_BASE_URL = sanitizedUrl;
 
 // Helper to retrieve auth headers
 const getAuthHeaders = () => {

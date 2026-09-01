@@ -144,6 +144,17 @@ class PantryPlannerRequest(BaseModel):
     body_type: Optional[str] = "Mesomorph"
     fitness_goals: Optional[str] = "Hypertrophy"
 
+# --- HEALTH CHECK & ROOT ROUTES ---
+
+@app.get("/")
+@app.get("/health")
+async def health_check():
+    return {
+        "status": "online",
+        "service": "AuraTrainer Core Backend",
+        "version": "Phase 2 MVP"
+    }
+
 # --- CORE USER ROUTES ---
 
 @app.post("/api/auth/register", status_code=status.HTTP_201_CREATED)
