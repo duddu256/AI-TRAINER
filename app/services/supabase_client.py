@@ -31,11 +31,62 @@ print(f"SUPABASE_ANON_KEY loaded: {bool(SUPABASE_ANON_KEY)}")
 print(f"SUPABASE_SERVICE_KEY loaded: {bool(SUPABASE_SERVICE_KEY)}")
 print(f"-----------------------------------")
 
-if not all([SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_KEY]):
-    raise ValueError("Missing Supabase configuration keys in your .env file!")
+import logging
 
-# Client for user authentication (public anon key)
-supabase_auth: Client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+logger = logging.getLogger("auratrainer.supabase")
 
-# Client for database queries with RLS bypass (secret service role key)
-supabase_db: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)
+
+class _MissingSupabaseClient:
+    """
+    Safe fallback stand-in used when Supabase credentials are absent.
+
+    Keeps the FastAPI process alive so Railway health probes (`/` and
+    `/health`) still return 200, while any attempt to actually reach the
+    database or auth layer raises a clear, actionable runtime error instead
+    of crashing the whole server at import time.
+    """
+
+    def __init__(self, reason: str):
+        self._reason = reason
+
+    def _fail(self, *args, **kwargs):
+        raise RuntimeError(
+            "Supabase client is not configured: "
+            f"{self._reason}. Set SUPABASE_URL, SUPABASE_ANON_KEY and "
+            "SUPABASE_SERVICE_KEY in the environment to enable database "
+            "and auth features."
+        )
+
+    # Any attribute access (e.g. .auth, .table(...)) funnels into _fail so
+    # the error only surfaces on real usage, never on health checks.
+    def __getattr__(self, name):
+        return self._fail
+
+
+_missing = [
+    name
+    for name, value in (
+        ("SUPABASE_URL", SUPABASE_URL),
+        ("SUPABASE_ANON_KEY", SUPABASE_ANON_KEY),
+        ("SUPABASE_SERVICE_KEY", SUPABASE_SERVICE_KEY),
+    )
+    if not value
+]
+
+if _missing:
+    reason = f"missing environment variables: {', '.join(_missing)}"
+    logger.warning(
+        "[Supabase] %s. Starting in degraded mode; the server will stay "
+        "alive for health checks but database/auth calls will fail until "
+        "these are provided.",
+        reason,
+    )
+    print(f"[Supabase] WARNING: {reason}. Running in degraded mode.")
+    supabase_auth = _MissingSupabaseClient(reason)  # type: ignore[assignment]
+    supabase_db = _MissingSupabaseClient(reason)  # type: ignore[assignment]
+else:
+    # Client for user authentication (public anon key)
+    supabase_auth: Client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+
+    # Client for database queries with RLS bypass (secret service role key)
+    supabase_db: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY)

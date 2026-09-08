@@ -3,7 +3,7 @@ let sanitizedUrl = rawApiUrl.trim().replace(/\/+$/, "");
 if (sanitizedUrl.endsWith("/api")) {
   sanitizedUrl = sanitizedUrl.slice(0, -4);
 }
-const API_BASE_URL = sanitizedUrl;
+export const API_BASE_URL = sanitizedUrl;
 
 // Helper to retrieve auth headers
 const getAuthHeaders = () => {

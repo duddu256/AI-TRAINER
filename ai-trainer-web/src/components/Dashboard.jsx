@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
+import { useLocation } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { api } from "../services/api";
 import AchievementsModal from "./AchievementsModal";
@@ -7,6 +8,30 @@ import CustomSplitEditor from "./CustomSplitEditor";
 export default function Dashboard({ onLogout }) {
   // Today's Date in ISO format (YYYY-MM-DD)
   const todayStr = new Date().toISOString().split("T")[0];
+
+  // Bottom dock pillars are routes that all resolve to this dashboard shell;
+  // translate the active route into a smooth scroll to the matching section.
+  const location = useLocation();
+  useEffect(() => {
+    const routeToSection = {
+      "/food-log": "diet",
+      "/diet": "diet",
+      "/workouts": "workout",
+      "/progress": "progress",
+    };
+    const sectionId = routeToSection[location.pathname];
+    // Defer a tick so the target section is mounted before we scroll.
+    const timer = setTimeout(() => {
+      if (sectionId) {
+        document
+          .getElementById(sectionId)
+          ?.scrollIntoView({ behavior: "smooth", block: "start" });
+      } else if (location.pathname === "/profile") {
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      }
+    }, 60);
+    return () => clearTimeout(timer);
+  }, [location.pathname]);
 
   // --- STATE SYSTEM ---
   const [date, setDate] = useState(todayStr);
@@ -656,11 +681,18 @@ export default function Dashboard({ onLogout }) {
   const offset4 = circ4 - (circ4 * Math.min(100, fatPercent)) / 100;
 
   return (
-    <div className="min-h-screen w-full bg-slate-950 text-white relative overflow-x-hidden font-sans pb-24">
-      
-      {/* Background Ambient Cybernetic Glows */}
-      <div className="absolute top-0 right-0 w-[700px] h-[700px] bg-blue-600/10 blur-[150px] rounded-full pointer-events-none z-0" />
-      <div className="absolute bottom-20 left-0 w-[700px] h-[700px] bg-cyan-500/10 blur-[140px] rounded-full pointer-events-none z-0" />
+    <div className="min-h-screen w-full bg-slate-950 text-white relative overflow-x-hidden font-sans pb-32">
+
+      {/* Mechanical charcoal canvas: a single fixed hairline grid instead of
+          floating blurred glow orbs (strips the generic "AI-generated" look). */}
+      <div
+        className="fixed inset-0 pointer-events-none z-0 opacity-[0.04]"
+        style={{
+          backgroundImage:
+            "linear-gradient(to right, #ffffff 1px, transparent 1px), linear-gradient(to bottom, #ffffff 1px, transparent 1px)",
+          backgroundSize: "44px 44px",
+        }}
+      />
 
       {/* HEADER SECTION */}
       <header className="border-b border-white/5 bg-slate-950/85 backdrop-blur-2xl sticky top-0 z-40 px-3.5 sm:px-6 py-3 sm:py-4">
@@ -743,6 +775,83 @@ export default function Dashboard({ onLogout }) {
         </div>
       </header>
 
+      {/* COMPACT ATHLETIC STATUS BAR — streak / daily completion / sync */}
+      {(() => {
+        const habitFlags = [
+          log.workout_completed,
+          log.diet_met,
+          log.water_met,
+          log.steps_met,
+        ];
+        const metCount = habitFlags.filter(Boolean).length;
+        const dailyCompletion = Math.round((metCount / habitFlags.length) * 100);
+        const streak =
+          profile?.current_streak ?? profile?.streak_days ?? metCount;
+        const synced = !loading && !error;
+        return (
+          <div className="relative z-30 max-w-7xl mx-auto px-4 sm:px-6 mt-4">
+            <div className="flex items-center justify-between gap-3 bg-slate-900/95 border border-white/[0.08] rounded-2xl px-3.5 sm:px-5 py-2.5 shadow-lg">
+              <div className="flex items-center gap-2 sm:gap-3">
+                <span className="text-base leading-none">🔥</span>
+                <div className="leading-none">
+                  <div className="text-[8px] font-black tracking-[0.2em] text-slate-500 uppercase">
+                    Streak
+                  </div>
+                  <div className="text-sm font-black text-[#CCFF00] font-stats tabular-nums">
+                    {streak}
+                    <span className="text-[9px] text-slate-500 ml-1 font-black uppercase tracking-wider">
+                      {streak === 1 ? "day" : "days"}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex-1 flex items-center gap-2 sm:gap-3 max-w-[220px] sm:max-w-xs">
+                <div className="flex-1">
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-[8px] font-black tracking-[0.2em] text-slate-500 uppercase">
+                      Daily Goals
+                    </span>
+                    <span className="text-[10px] font-black text-cyan-400 font-stats tabular-nums">
+                      {dailyCompletion}%
+                    </span>
+                  </div>
+                  <div className="h-1.5 w-full rounded-full bg-white/[0.06] overflow-hidden">
+                    <div
+                      className="h-full rounded-full bg-gradient-to-r from-cyan-400 to-[#00F0FF] transition-all duration-500"
+                      style={{ width: `${dailyCompletion}%` }}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                <span
+                  className={`w-1.5 h-1.5 rounded-full ${
+                    synced
+                      ? "bg-[#10B981] animate-pulse"
+                      : error
+                        ? "bg-red-500"
+                        : "bg-amber-400 animate-pulse"
+                  }`}
+                />
+                <span
+                  className={`text-[9px] font-black tracking-[0.18em] uppercase ${
+                    synced
+                      ? "text-[#10B981]"
+                      : error
+                        ? "text-red-400"
+                        : "text-amber-400"
+                  }`}
+                >
+                  {synced ? "Synced" : error ? "Offline" : "Syncing"}
+                </span>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
+
       {error && (
         <div className="max-w-7xl mx-auto px-4 sm:px-6 mt-4">
           <div className="p-3.5 sm:p-4 bg-red-950/40 border-l-4 border-red-500 text-red-200 text-xs font-bold rounded-r-xl uppercase tracking-wider backdrop-blur-md">
@@ -757,7 +866,7 @@ export default function Dashboard({ onLogout }) {
         <div className="lg:col-span-8 space-y-8">
           
           {/* 1. DAILY FOCUS SPLIT SELECTOR & PROGRESSIVE OVERLOAD (MODULE 2) */}
-          <section className="bg-slate-900/70 backdrop-blur-xl border border-white/10 rounded-3xl p-6 sm:p-8 shadow-2xl relative overflow-hidden transition-all duration-300 hover:border-cyan-500/30">
+          <section id="workout" className="scroll-mt-24 bg-slate-900/95 border border-white/[0.08] rounded-3xl p-6 sm:p-8 shadow-2xl relative overflow-hidden transition-all duration-300 hover:border-cyan-500/30">
             <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-600 via-cyan-400 to-[#00F0FF]"></div>
             
             <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-5 gap-3">
@@ -958,7 +1067,7 @@ export default function Dashboard({ onLogout }) {
           </section>
 
           {/* 2. STREAK CHECKLIST PROTOCOL (MODULE 3) */}
-          <section className="space-y-4">
+          <section id="progress" className="scroll-mt-24 space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="text-xl font-black italic tracking-tighter uppercase">
                 STREAK PROTOCOL <span className="text-cyan-400">// DAILY HABITS</span>
@@ -1058,7 +1167,7 @@ export default function Dashboard({ onLogout }) {
           </section>
 
           {/* 3. APPLE-INSPIRED CONCENTRIC MACRO ACTIVITY TRACKER */}
-          <section className="bg-slate-900/70 backdrop-blur-xl border border-white/10 rounded-3xl p-4 sm:p-8 shadow-2xl hover:border-cyan-500/30 transition-all duration-300">
+          <section className="bg-slate-900/95 border border-white/[0.08] rounded-3xl p-4 sm:p-8 shadow-2xl hover:border-cyan-500/30 transition-all duration-300">
             <div className="flex items-center justify-between mb-4 sm:mb-6">
               <div>
                 <span className="text-[8px] sm:text-[9px] font-black tracking-[0.25em] text-cyan-400 uppercase">
@@ -1293,7 +1402,7 @@ export default function Dashboard({ onLogout }) {
           </section>
 
           {/* 4. AI NATURAL LANGUAGE FOOD PARSER & MEAL LOGS (MODULE 1 - INDIAN & GLOBAL) */}
-          <section className="bg-slate-900/70 backdrop-blur-xl border border-white/10 rounded-3xl p-6 sm:p-8 shadow-2xl space-y-6 hover:border-cyan-500/30 transition-all duration-300">
+          <section id="diet" className="scroll-mt-24 bg-slate-900/95 border border-white/[0.08] rounded-3xl p-6 sm:p-8 shadow-2xl space-y-6 hover:border-cyan-500/30 transition-all duration-300">
             
             {/* Header with Log button */}
             <div className="flex items-center justify-between">
@@ -1421,7 +1530,7 @@ export default function Dashboard({ onLogout }) {
         <div className="lg:col-span-4 space-y-8">
           
           {/* 1. SAVED MEAL TEMPLATES PANEL (MODULE 1) */}
-          <section className="bg-slate-900/70 backdrop-blur-xl border border-white/10 rounded-3xl p-6 shadow-2xl hover:border-blue-500/30 transition-all duration-300">
+          <section className="bg-slate-900/95 border border-white/[0.08] rounded-3xl p-6 shadow-2xl hover:border-blue-500/30 transition-all duration-300">
             <div className="flex items-center justify-between mb-4">
               <div>
                 <span className="text-[9px] font-black tracking-[0.25em] text-cyan-400 uppercase">
@@ -1477,7 +1586,7 @@ export default function Dashboard({ onLogout }) {
           </section>
 
           {/* 2. HYDRATION STATION */}
-          <section className="bg-slate-900/70 backdrop-blur-xl border border-white/10 rounded-3xl p-6 shadow-2xl text-center hover:border-cyan-500/30 transition-all duration-300">
+          <section className="bg-slate-900/95 border border-white/[0.08] rounded-3xl p-6 shadow-2xl text-center hover:border-cyan-500/30 transition-all duration-300">
             <div className="flex items-center justify-between mb-4">
               <span className="text-[9px] font-black tracking-[0.25em] text-cyan-400 uppercase">
                 HYDRATION STATION
@@ -1518,7 +1627,7 @@ export default function Dashboard({ onLogout }) {
           </section>
 
           {/* 3. STEPS TRACKER */}
-          <section className="bg-slate-900/70 backdrop-blur-xl border border-white/10 rounded-3xl p-6 shadow-2xl text-center hover:border-blue-500/30 transition-all duration-300">
+          <section className="bg-slate-900/95 border border-white/[0.08] rounded-3xl p-6 shadow-2xl text-center hover:border-blue-500/30 transition-all duration-300">
             <div className="flex items-center justify-between mb-4">
               <span className="text-[9px] font-black tracking-[0.25em] text-cyan-400 uppercase">
                 STEPS REGISTER
@@ -1559,7 +1668,7 @@ export default function Dashboard({ onLogout }) {
           </section>
 
           {/* 4. AI TACTICAL CONSOLE: STRATEGIST & PANTRY COACHING (MODULE 4) */}
-          <section className="bg-slate-900/70 backdrop-blur-xl border border-white/10 rounded-3xl p-6 shadow-2xl relative overflow-hidden hover:border-cyan-500/30 transition-all duration-300">
+          <section className="bg-slate-900/95 border border-white/[0.08] rounded-3xl p-6 shadow-2xl relative overflow-hidden hover:border-cyan-500/30 transition-all duration-300">
             <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-600 via-cyan-400 to-[#00F0FF]"></div>
             
             {/* AI Tab Selector */}

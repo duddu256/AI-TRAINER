@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import LoginRegister from "./components/LoginRegister";
 import Onboarding from "./components/Onboarding";
 import Dashboard from "./components/Dashboard";
+import BottomTaskbar from "./components/BottomTaskbar";
 import { api } from "./services/api";
 
 function AuthGuard({ children, token, handleLogout, needsOnboarding, handleAuthSuccess, handleOnboardingDone, loading }) {
@@ -90,14 +91,22 @@ export default function App() {
               handleOnboardingDone={handleOnboardingDone}
               loading={loading}
             >
-              <Routes>
-                <Route path="/" element={<Dashboard onLogout={handleLogout} />} />
-                <Route path="/dashboard" element={<Dashboard onLogout={handleLogout} />} />
-                <Route path="/food-log" element={<Navigate to="/dashboard" replace />} />
-                <Route path="/workouts" element={<Navigate to="/dashboard" replace />} />
-                <Route path="/pantry-ai" element={<Navigate to="/dashboard" replace />} />
-                <Route path="*" element={<Navigate to="/dashboard" replace />} />
-              </Routes>
+              <>
+                <Routes>
+                  <Route path="/" element={<Dashboard onLogout={handleLogout} />} />
+                  <Route path="/dashboard" element={<Dashboard onLogout={handleLogout} />} />
+                  {/* VXS dock pillars: each resolves to the dashboard shell and
+                      scrolls to its section so the SPA never 404s on refresh. */}
+                  <Route path="/food-log" element={<Dashboard onLogout={handleLogout} />} />
+                  <Route path="/diet" element={<Dashboard onLogout={handleLogout} />} />
+                  <Route path="/workouts" element={<Dashboard onLogout={handleLogout} />} />
+                  <Route path="/progress" element={<Dashboard onLogout={handleLogout} />} />
+                  <Route path="/profile" element={<Dashboard onLogout={handleLogout} />} />
+                  <Route path="/pantry-ai" element={<Navigate to="/dashboard" replace />} />
+                  <Route path="*" element={<Navigate to="/dashboard" replace />} />
+                </Routes>
+                <BottomTaskbar />
+              </>
             </AuthGuard>
           }
         />
