@@ -4,6 +4,7 @@ import LoginRegister from "./components/LoginRegister";
 import Onboarding from "./components/Onboarding";
 import Dashboard from "./components/Dashboard";
 import BottomTaskbar from "./components/BottomTaskbar";
+import NotFound from "./components/NotFound";
 import { api } from "./services/api";
 
 function AuthGuard({ children, token, handleLogout, needsOnboarding, handleAuthSuccess, handleOnboardingDone, loading }) {
@@ -76,40 +77,48 @@ export default function App() {
     verifyUserSession();
   };
 
+  const authenticatedShell = (
+    <AuthGuard
+      token={token}
+      handleLogout={handleLogout}
+      needsOnboarding={needsOnboarding}
+      handleAuthSuccess={handleAuthSuccess}
+      handleOnboardingDone={handleOnboardingDone}
+      loading={loading}
+    >
+      <>
+        <Dashboard onLogout={handleLogout} />
+        <BottomTaskbar />
+      </>
+    </AuthGuard>
+  );
+
   return (
     <BrowserRouter>
       <Routes>
-        {/* All routes start directly with AuthGuard (Login -> Onboarding -> Dashboard) */}
+        {/* Explicit 404 Route */}
+        <Route path="/404" element={<NotFound />} />
+
+        {/* Public Login Route */}
         <Route
-          path="/*"
+          path="/login"
           element={
-            <AuthGuard
-              token={token}
-              handleLogout={handleLogout}
-              needsOnboarding={needsOnboarding}
-              handleAuthSuccess={handleAuthSuccess}
-              handleOnboardingDone={handleOnboardingDone}
-              loading={loading}
-            >
-              <>
-                <Routes>
-                  <Route path="/" element={<Dashboard onLogout={handleLogout} />} />
-                  <Route path="/dashboard" element={<Dashboard onLogout={handleLogout} />} />
-                  {/* VXS dock pillars: each resolves to the dashboard shell and
-                      scrolls to its section so the SPA never 404s on refresh. */}
-                  <Route path="/food-log" element={<Dashboard onLogout={handleLogout} />} />
-                  <Route path="/diet" element={<Dashboard onLogout={handleLogout} />} />
-                  <Route path="/workouts" element={<Dashboard onLogout={handleLogout} />} />
-                  <Route path="/progress" element={<Dashboard onLogout={handleLogout} />} />
-                  <Route path="/profile" element={<Dashboard onLogout={handleLogout} />} />
-                  <Route path="/pantry-ai" element={<Navigate to="/dashboard" replace />} />
-                  <Route path="*" element={<Navigate to="/dashboard" replace />} />
-                </Routes>
-                <BottomTaskbar />
-              </>
-            </AuthGuard>
+            token ? <Navigate to="/dashboard" replace /> : <LoginRegister onAuthSuccess={handleAuthSuccess} />
           }
         />
+
+        {/* Authenticated Application Pillars */}
+        <Route path="/" element={authenticatedShell} />
+        <Route path="/dashboard" element={authenticatedShell} />
+        <Route path="/food-log" element={authenticatedShell} />
+        <Route path="/diet" element={authenticatedShell} />
+        <Route path="/workouts" element={authenticatedShell} />
+        <Route path="/progress" element={authenticatedShell} />
+        <Route path="/profile" element={authenticatedShell} />
+        <Route path="/pantry-ai" element={authenticatedShell} />
+
+        {/* Catch-all Wildcard Route -> Tactical 404 Error Screen (Eliminates dead ends) */}
+        <Route path="*" element={<NotFound />} />
       </Routes>
     </BrowserRouter>
   );

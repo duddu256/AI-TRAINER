@@ -304,6 +304,10 @@ def parse_food_string(input_text: str) -> Dict[str, Any]:
                     return {
                         "parsed_successfully": True,
                         "inferred_name": str(data.get("inferred_name", cleaned[:35])).upper(),
+                        "calories": cal_val,
+                        "protein_g": p_val,
+                        "carbs_g": c_val,
+                        "fat_g": f_val,
                         "macros": {
                             "calories": cal_val,
                             "protein_g": p_val,
@@ -455,6 +459,10 @@ def parse_food_string(input_text: str) -> Dict[str, Any]:
     return {
         "parsed_successfully": True,
         "inferred_name": inferred_name.upper(),
+        "calories": max(50, total_cals),
+        "protein_g": round(max(2.0, total_protein), 1),
+        "carbs_g": round(max(0.0, total_carbs), 1),
+        "fat_g": round(max(0.0, total_fat), 1),
         "macros": {
             "calories": max(50, total_cals),
             "protein_g": round(max(2.0, total_protein), 1),
