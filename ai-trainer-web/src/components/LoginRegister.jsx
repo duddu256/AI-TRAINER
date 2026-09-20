@@ -85,8 +85,22 @@ export default function LoginRegister({ onAuthSuccess }) {
 
         {/* Alerts */}
         {error && (
-          <div className="mb-6 p-4 bg-red-950/30 border-l-4 border-red-500 text-red-300 text-xs font-bold tracking-wide rounded-r-xl uppercase">
-            {error}
+          <div className="mb-6 p-4 bg-red-950/40 border border-red-500/50 rounded-2xl text-red-200 text-xs font-semibold leading-relaxed shadow-[0_0_20px_rgba(239,68,68,0.15)]">
+            <div className="flex items-center gap-2 text-red-400 font-black tracking-wider uppercase mb-1.5">
+              <span className="w-2 h-2 rounded-full bg-red-500 animate-ping"></span>
+              {error.includes("DATABASE") ? "DATABASE STATUS NOTICE" : "AUTHENTICATION NOTICE"}
+            </div>
+            <p className="text-slate-300 font-mono text-[11px] mb-2">{error}</p>
+            {error.includes("supabase.com") && (
+              <a
+                href="https://supabase.com/dashboard"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-500/20 hover:bg-red-500/30 border border-red-500/40 text-red-300 font-bold text-[10px] tracking-wider uppercase transition cursor-pointer mt-1"
+              >
+                OPEN SUPABASE DASHBOARD →
+              </a>
+            )}
           </div>
         )}
 

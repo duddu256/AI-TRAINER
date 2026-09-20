@@ -60,6 +60,32 @@ app.add_middleware(
 
 security = HTTPBearer()
 
+def handle_db_or_auth_error(e: Exception, default_status: int = status.HTTP_400_BAD_REQUEST) -> HTTPException:
+    err_str = str(e)
+    err_type = type(e).__name__
+    
+    # Detect DNS or Network unreachable / ConnectError (e.g. Supabase paused project)
+    if "11001" in err_str or "getaddrinfo" in err_str or "ConnectError" in err_type or "Name or service not known" in err_str:
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "DATABASE CONNECTION ERROR: Unable to reach Supabase project. "
+                "Your Supabase project is likely PAUSED due to inactivity. "
+                "Please visit https://supabase.com/dashboard, open your project, and click 'Restore Project', "
+                "or update the SUPABASE_URL and API keys in your .env file."
+            )
+        )
+    
+    # Friendly auth messages
+    if "Password should be at least" in err_str:
+        return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Password must be at least 6 characters long.")
+    if "User already registered" in err_str:
+        return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="An account with this email is already registered. Please log in instead.")
+    if "Invalid login credentials" in err_str:
+        return HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password.")
+        
+    return HTTPException(status_code=default_status, detail=err_str)
+
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
     try:
@@ -68,6 +94,8 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
             raise ValueError("Invalid user session")
         return response.user
     except Exception as e:
+        if "11001" in str(e) or "getaddrinfo" in str(e) or "ConnectError" in type(e).__name__:
+            raise handle_db_or_auth_error(e)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Authentication failed: {str(e)}"
@@ -169,7 +197,7 @@ async def register_user(user: UserAuth):
         user_id = response.user.id if response.user else None
         return {"message": "User registered successfully!", "user_id": user_id}
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise handle_db_or_auth_error(e, status.HTTP_400_BAD_REQUEST)
 
 @app.post("/api/auth/login")
 async def login_user(user: UserAuth):
@@ -182,7 +210,7 @@ async def login_user(user: UserAuth):
             "user": {"id": response.user.id, "email": response.user.email}
         }
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
+        raise handle_db_or_auth_error(e, status.HTTP_401_UNAUTHORIZED)
 
 class TokenRefreshRequest(BaseModel):
     refresh_token: str
@@ -221,7 +249,7 @@ async def save_user_profile(profile_data: ProfileOnboarding, current_user = Depe
         }).execute()
         return {"status": "Profile saved!", "data": next(iter(response.data), {})}
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise handle_db_or_auth_error(e, status.HTTP_400_BAD_REQUEST)
 
 @app.get("/api/profile")
 async def get_user_profile(current_user = Depends(get_current_user)):
@@ -229,7 +257,7 @@ async def get_user_profile(current_user = Depends(get_current_user)):
         response = supabase_db.table("profiles").select("*").eq("id", current_user.id).execute()
         return next(iter(response.data), {})
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise handle_db_or_auth_error(e, status.HTTP_400_BAD_REQUEST)
 
 # --- WORKOUT ENGINE & VECTOR MEMORY ENDPOINTS ---
 
@@ -426,7 +454,7 @@ async def get_daily_log(date: date_type, current_user = Depends(get_current_user
         insert_res = supabase_db.table("daily_logs").insert(new_log).execute()
         return next(iter(insert_res.data), new_log)
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise handle_db_or_auth_error(e, status.HTTP_400_BAD_REQUEST)
 
 @app.post("/api/logs/trackers")
 async def update_trackers(tracker_data: TrackerUpdate, current_user = Depends(get_current_user)):
@@ -473,7 +501,7 @@ async def update_trackers(tracker_data: TrackerUpdate, current_user = Depends(ge
             "newly_unlocked_badges": newly_unlocked
         }
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise handle_db_or_auth_error(e, status.HTTP_400_BAD_REQUEST)
 
 @app.post("/api/logs/meals")
 async def log_meal(meal_data: MealLog, current_user = Depends(get_current_user)):
@@ -524,7 +552,7 @@ async def log_meal(meal_data: MealLog, current_user = Depends(get_current_user))
             "newly_unlocked_badges": newly_unlocked
         }
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise handle_db_or_auth_error(e, status.HTTP_400_BAD_REQUEST)
 
 # --- AI RECIPES ENGINE ---
 
