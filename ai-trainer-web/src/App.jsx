@@ -1,11 +1,16 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, lazy } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import LoginRegister from "./components/LoginRegister";
 import Onboarding from "./components/Onboarding";
 import Dashboard from "./components/Dashboard";
-import BottomTaskbar from "./components/BottomTaskbar";
 import NotFound from "./components/NotFound";
 import { api } from "./services/api";
+
+// Each dashboard section is its own chunk, loaded on first visit to its route.
+const DietSection = lazy(() => import("./components/sections/DietSection"));
+const WorkoutSection = lazy(() => import("./components/sections/WorkoutSection"));
+const TrackersSection = lazy(() => import("./components/sections/TrackersSection"));
+const ProfileSection = lazy(() => import("./components/sections/ProfileSection"));
 
 function AuthGuard({ children, token, handleLogout, needsOnboarding, handleAuthSuccess, handleOnboardingDone, loading }) {
   if (loading) {
@@ -86,10 +91,7 @@ export default function App() {
       handleOnboardingDone={handleOnboardingDone}
       loading={loading}
     >
-      <>
-        <Dashboard onLogout={handleLogout} />
-        <BottomTaskbar />
-      </>
+      <Dashboard onLogout={handleLogout} />
     </AuthGuard>
   );
 
@@ -107,15 +109,23 @@ export default function App() {
           }
         />
 
-        {/* Authenticated Application Pillars */}
-        <Route path="/" element={authenticatedShell} />
-        <Route path="/dashboard" element={authenticatedShell} />
-        <Route path="/food-log" element={authenticatedShell} />
-        <Route path="/diet" element={authenticatedShell} />
-        <Route path="/workouts" element={authenticatedShell} />
-        <Route path="/progress" element={authenticatedShell} />
-        <Route path="/profile" element={authenticatedShell} />
-        <Route path="/pantry-ai" element={authenticatedShell} />
+        {/* Authenticated dashboard: layout shell + one route per section */}
+        <Route path="/dashboard" element={authenticatedShell}>
+          <Route index element={<Navigate to="diet" replace />} />
+          <Route path="diet" element={<DietSection />} />
+          <Route path="workouts" element={<WorkoutSection />} />
+          <Route path="trackers" element={<TrackersSection />} />
+          <Route path="profile" element={<ProfileSection />} />
+        </Route>
+
+        {/* Legacy pillar URLs (bookmarks, old links) redirect to their section */}
+        <Route path="/" element={<Navigate to="/dashboard/diet" replace />} />
+        <Route path="/food-log" element={<Navigate to="/dashboard/diet" replace />} />
+        <Route path="/diet" element={<Navigate to="/dashboard/diet" replace />} />
+        <Route path="/pantry-ai" element={<Navigate to="/dashboard/diet" replace />} />
+        <Route path="/workouts" element={<Navigate to="/dashboard/workouts" replace />} />
+        <Route path="/progress" element={<Navigate to="/dashboard/trackers" replace />} />
+        <Route path="/profile" element={<Navigate to="/dashboard/profile" replace />} />
 
         {/* Catch-all Wildcard Route -> Tactical 404 Error Screen (Eliminates dead ends) */}
         <Route path="*" element={<NotFound />} />

@@ -35,7 +35,8 @@ ROUNDING_RULES = """Rounding rules (mandatory):
 - Solids: round to the nearest 5g (e.g. "35g paneer", not "34.2g")
 - Liquids: round to the nearest 25ml
 - Whole/countable items: round to the nearest 0.5 unit (e.g. "1.5 rotis")
-- Never output more than one decimal place under any circumstance"""
+- Never output more than one decimal place under any circumstance
+- Prefer kitchen-practical phrasing where natural (e.g. "1 medium roti", "1/2 cup dal", "1 katori dahi") over precise gram weights"""
 
 JSON_ONLY_RULE = "Respond ONLY with valid JSON matching this exact schema, no prose, no markdown fences:"
 
@@ -276,6 +277,40 @@ def _round_to_step(value: float, step: float):
     """Rounds to the nearest step (5g solids, 25ml liquids, 0.5 countables); returns int when whole."""
     rounded = round(value / step) * step
     return int(rounded) if float(rounded).is_integer() else round(rounded, 1)
+
+
+_SOLID_UNITS = {"g", "gm", "gms", "gram", "grams", "kg"}
+_LIQUID_UNITS = {"ml", "milliliter", "milliliters", "millilitre", "millilitres", "l", "litre", "liter"}
+
+
+def _display_ingredient(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Rounds an LLM ingredient quantity for display (5g solids, 25ml liquids, 0.5 countables)
+    while keeping the exact value, so macro math elsewhere is never done on rounded numbers.
+    """
+    name = str(raw.get("name", "")).strip()
+    unit = str(raw.get("unit", "")).strip()
+    try:
+        exact = float(raw.get("quantity", 0) or 0)
+    except (TypeError, ValueError):
+        exact = 0.0
+
+    unit_key = unit.lower()
+    if unit_key in _SOLID_UNITS:
+        if unit_key == "kg":
+            exact, unit, unit_key = exact * 1000, "g", "g"
+        shown = max(5, _round_to_step(exact, 5)) if exact > 0 else 0
+        display = f"{shown}g {name}"
+    elif unit_key in _LIQUID_UNITS:
+        if unit_key in {"l", "litre", "liter"}:
+            exact, unit = exact * 1000, "ml"
+        shown = max(25, _round_to_step(exact, 25)) if exact > 0 else 0
+        display = f"{shown}ml {name}"
+    else:
+        shown = max(0.5, _round_to_step(exact, 0.5)) if exact > 0 else 0
+        display = f"{shown} {unit} {name}".replace("  ", " ").strip()
+
+    return {"name": name, "quantity": shown, "quantity_exact": exact, "unit": unit, "display": display}
 
 
 def _extract_and_parse_json(text: str) -> Optional[Dict[str, Any]]:
@@ -680,10 +715,7 @@ def generate_strategist_meal_suggestion(
             p_val = round(float(llm_macros.get("protein_g", protein)), 1)
             c_val = round(float(llm_macros.get("carbs_g", carbs)), 1)
             f_val = round(float(llm_macros.get("fat_g", fat)), 1)
-            ingredients = [
-                {"name": str(i.get("name", "")), "quantity": round(float(i.get("quantity", 0)), 1), "unit": str(i.get("unit", ""))}
-                for i in (data.get("ingredients") or []) if isinstance(i, dict)
-            ]
+            ingredients = [_display_ingredient(i) for i in (data.get("ingredients") or []) if isinstance(i, dict)]
             return {
                 "name": str(data["meal_name"]).upper(),
                 "source": "llm",

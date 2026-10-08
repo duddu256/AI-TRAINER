@@ -152,6 +152,27 @@ class MealSuggestionRequest(BaseModel):
     prompt: Optional[str] = None
     pantry_items: Optional[List[str]] = None
 
+class ProfileUpdate(BaseModel):
+    name: Optional[str] = None
+    age: Optional[int] = Field(default=None, gt=0, lt=120)
+    height_cm: Optional[float] = Field(default=None, gt=0, lt=300)
+    weight_kg: Optional[float] = Field(default=None, gt=0, lt=500)
+    body_type: Optional[str] = None
+    fitness_goals: Optional[str] = None
+    target_calories: Optional[int] = Field(default=None, gt=0, lt=10000)
+    target_protein_g: Optional[float] = Field(default=None, ge=0, lt=1000)
+    target_carbs_g: Optional[float] = Field(default=None, ge=0, lt=2000)
+    target_fat_g: Optional[float] = Field(default=None, ge=0, lt=1000)
+    target_water_ml: Optional[int] = Field(default=None, ge=0, lt=20000)
+    target_steps: Optional[int] = Field(default=None, ge=0, lt=200000)
+
+class MealUpdate(BaseModel):
+    name: Optional[str] = None
+    calories: Optional[int] = Field(default=None, ge=0)
+    protein_g: Optional[float] = Field(default=None, ge=0)
+    carbs_g: Optional[float] = Field(default=None, ge=0)
+    fat_g: Optional[float] = Field(default=None, ge=0)
+
 class WeightLogEntry(BaseModel):
     weight_kg: float = Field(gt=0, lt=500)
     log_date: Optional[date_type] = None
@@ -254,6 +275,24 @@ async def save_user_profile(profile_data: ProfileOnboarding, current_user = Depe
             "target_steps": profile_data.target_steps,
         }).execute()
         return {"status": "Profile saved!", "data": next(iter(response.data), {})}
+    except Exception as e:
+        raise handle_db_or_auth_error(e, status.HTTP_400_BAD_REQUEST)
+
+@app.patch("/api/profile")
+async def update_user_profile(updates: ProfileUpdate, current_user = Depends(get_current_user)):
+    """
+    Partial profile update: only the fields sent are changed (edit mode on the Profile page).
+    """
+    payload = {k: v for k, v in updates.model_dump(exclude_unset=True).items() if v is not None}
+    if "name" in payload:
+        payload["name"] = payload["name"].strip().upper()
+        if not payload["name"]:
+            raise HTTPException(status_code=400, detail="Name cannot be empty.")
+    if not payload:
+        raise HTTPException(status_code=400, detail="No profile fields provided to update.")
+    try:
+        response = supabase_db.table("profiles").update(payload).eq("id", current_user.id).execute()
+        return {"status": "Profile updated!", "data": next(iter(response.data), {})}
     except Exception as e:
         raise handle_db_or_auth_error(e, status.HTTP_400_BAD_REQUEST)
 
@@ -560,6 +599,50 @@ async def log_meal(meal_data: MealLog, current_user = Depends(get_current_user))
     except Exception as e:
         raise handle_db_or_auth_error(e, status.HTTP_400_BAD_REQUEST)
 
+def _find_logged_meal(user_id: str, date_str: str, meal_id: str, index: Optional[int]):
+    """
+    Returns (meals, position) for a meal in a day's log. `index` pins the exact row, since meals
+    logged before ids became unique can share an id; it must still match `meal_id`.
+    """
+    res = supabase_db.table("daily_logs").select("meals").eq("user_id", user_id).eq("date", date_str).execute()
+    current_meals = (next(iter(res.data), {}) or {}).get("meals", []) or []
+
+    if index is not None and 0 <= index < len(current_meals) and current_meals[index].get("id") == meal_id:
+        return current_meals, index
+    target_idx = next((i for i, m in enumerate(current_meals) if m.get("id") == meal_id), None)
+    if target_idx is None:
+        raise HTTPException(status_code=404, detail="Meal not found in this day's log.")
+    return current_meals, target_idx
+
+@app.patch("/api/logs/meals/{meal_id}")
+async def update_logged_meal(
+    meal_id: str,
+    updates: MealUpdate,
+    date: date_type,
+    index: Optional[int] = None,
+    current_user = Depends(get_current_user)
+):
+    """
+    Edits one logged meal's name or macros in place.
+    """
+    date_str = str(date)
+    changes = {k: v for k, v in updates.model_dump(exclude_unset=True).items() if v is not None}
+    if "name" in changes:
+        changes["name"] = changes["name"].strip().upper()
+        if not changes["name"]:
+            raise HTTPException(status_code=400, detail="Meal name cannot be empty.")
+    if not changes:
+        raise HTTPException(status_code=400, detail="No meal fields provided to update.")
+    try:
+        current_meals, target_idx = _find_logged_meal(current_user.id, date_str, meal_id, index)
+        current_meals[target_idx] = {**current_meals[target_idx], **changes}
+        update_res = supabase_db.table("daily_logs").update({"meals": current_meals}).eq("user_id", current_user.id).eq("date", date_str).execute()
+        return {"status": "Meal updated!", "data": next(iter(update_res.data), {})}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise handle_db_or_auth_error(e, status.HTTP_400_BAD_REQUEST)
+
 @app.delete("/api/logs/meals/{meal_id}")
 async def delete_logged_meal(
     meal_id: str,
@@ -568,20 +651,11 @@ async def delete_logged_meal(
     current_user = Depends(get_current_user)
 ):
     """
-    Removes one logged meal from a day's log. `index` pins the exact row, since meals logged
-    before ids became unique can share an id; it must still match `meal_id`.
+    Removes one logged meal from a day's log.
     """
     date_str = str(date)
     try:
-        res = supabase_db.table("daily_logs").select("meals").eq("user_id", current_user.id).eq("date", date_str).execute()
-        current_meals = (next(iter(res.data), {}) or {}).get("meals", []) or []
-
-        if index is not None and 0 <= index < len(current_meals) and current_meals[index].get("id") == meal_id:
-            target_idx = index
-        else:
-            target_idx = next((i for i, m in enumerate(current_meals) if m.get("id") == meal_id), None)
-        if target_idx is None:
-            raise HTTPException(status_code=404, detail="Meal not found in this day's log.")
+        current_meals, target_idx = _find_logged_meal(current_user.id, date_str, meal_id, index)
 
         current_meals.pop(target_idx)
         update_res = supabase_db.table("daily_logs").update({"meals": current_meals}).eq("user_id", current_user.id).eq("date", date_str).execute()
@@ -591,7 +665,7 @@ async def delete_logged_meal(
     except Exception as e:
         raise handle_db_or_auth_error(e, status.HTTP_400_BAD_REQUEST)
 
-@app.post("/api/logs/weight")
+@app.post("/api/weight-logs")
 async def log_weight(entry: WeightLogEntry, current_user = Depends(get_current_user)):
     """
     Upserts today's (or the given day's) body weight. Re-entering on the same day overwrites
@@ -603,11 +677,14 @@ async def log_weight(entry: WeightLogEntry, current_user = Depends(get_current_u
             {"user_id": current_user.id, "log_date": log_date, "weight_kg": round(entry.weight_kg, 2)},
             on_conflict="user_id,log_date"
         ).execute()
+        # Today's entry is the athlete's current weight, so keep the profile in step with it.
+        if log_date == str(date_type.today()):
+            supabase_db.table("profiles").update({"weight_kg": round(entry.weight_kg, 2)}).eq("id", current_user.id).execute()
         return {"status": "Weight logged!", "data": next(iter(res.data), {})}
     except Exception as e:
         raise handle_db_or_auth_error(e, status.HTTP_400_BAD_REQUEST)
 
-@app.get("/api/logs/weight")
+@app.get("/api/weight-logs")
 async def get_weight_history(limit: int = 90, current_user = Depends(get_current_user)):
     """
     Returns the user's most recent weight entries, newest first.

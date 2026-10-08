@@ -1,5 +1,6 @@
 import React, { useRef } from "react";
 import { motion, useMotionValue, useSpring, useTransform } from "framer-motion";
+import useCanHover from "../hooks/useCanHover";
 
 export default function TiltCard({
   children,
@@ -11,6 +12,9 @@ export default function TiltCard({
   ...props
 }) {
   const cardRef = useRef(null);
+  // Touch devices (matchMedia "(hover: none)") get the static elevated card only:
+  // no pointer listeners, no springs, no per-frame transforms.
+  const canHover = useCanHover();
 
   const x = useMotionValue(0);
   const y = useMotionValue(0);
@@ -20,6 +24,14 @@ export default function TiltCard({
 
   const rotateX = useTransform(mouseYSpring, [-0.5, 0.5], [`${tiltDegree}deg`, `-${tiltDegree}deg`]);
   const rotateY = useTransform(mouseXSpring, [-0.5, 0.5], [`-${tiltDegree}deg`, `${tiltDegree}deg`]);
+
+  if (!canHover) {
+    return (
+      <div onClick={onClick} className={`relative depth-elevated ${className}`} {...props}>
+        {children}
+      </div>
+    );
+  }
 
   const handleMouseMove = (e) => {
     if (!cardRef.current) return;
@@ -53,7 +65,7 @@ export default function TiltCard({
         boxShadow: enableGlow ? `0 15px 35px -5px ${glowColor}` : undefined,
       }}
       transition={{ type: "spring", stiffness: 300, damping: 25 }}
-      className={`relative transition-colors duration-200 pointer-events-auto ${className}`}
+      className={`relative depth-elevated transition-colors duration-200 pointer-events-auto ${className}`}
       {...props}
     >
       {children}

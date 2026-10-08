@@ -23,10 +23,11 @@
 | **Backend API** | **FastAPI (Python 3.10+)** | Asynchronous ASGI framework with native Pydantic v2 data validation, automated OpenAPI/Swagger documentation, lightning-fast execution speed, and seamless integration with Python AI/vector libraries. |
 | **Production Server** | **Uvicorn** | High-performance ASGI web server worker capable of dynamic port binding (`$PORT`) required by Railway, Render, and Fly.io. |
 | **Database & Auth** | **Supabase (PostgreSQL + GoTrue Auth)** | Provides rock-solid relational data integrity, PostgreSQL triggers/functions, user authentication with JWT bearer tokens, and Row-Level Security (RLS) ensuring strict tenant isolation. |
-| **AI Inference** | **Hybrid: Hugging Face Serverless + Deterministic Local NLP** | Uses Serverless LLMs (e.g. Qwen 2.5) for complex generative recipes and unstructured natural language queries, paired with a deterministic local database of 100+ foods for zero-latency, offline-safe nutrition parsing. |
+| **AI Inference** | **Hybrid: Groq (Llama 3.1 8B Instant, JSON mode) + Deterministic Local NLP** | Groq serves open models with sub-second latency and no cold starts (the Hugging Face serverless tier's 10-20s cold starts blew past our timeouts). Every call uses JSON mode with a fixed schema and hard rounding rules in the system prompt. A deterministic local database of 100+ foods remains the fallback for errors/timeouts, and every AI response carries `"source": "llm" \| "fallback"`. Hugging Face is still used for vector-memory embeddings only. |
 | **Frontend Framework** | **React 19 + Vite 8** | Instant Hot Module Replacement (HMR), optimized Rollup production bundling, and React 19 concurrent rendering primitives. |
-| **Routing** | **React Router v7** | Declarative client-side routing, protected auth guards, and dead-end-free wildcard 404 handling with SPA rewrites on static CDNs. |
-| **Styling & HUD** | **Tailwind CSS v4 + Lucide Icons + Framer Motion** | Ultra-responsive cyberpunk/tactical HUD interface with glassmorphism, zero layout shift, micro-animations, and clean dark-mode contrast. |
+| **Routing** | **React Router v7 (nested routes + `React.lazy`)** | The dashboard is a layout route with one child route per section (`/dashboard/diet`, `/workouts`, `/trackers`, `/profile`), each code-split and lazy-loaded. Gives back-button support, shareable URLs, and lighter mobile renders than one monolithic component. Wildcard 404 handling with SPA rewrites on static CDNs. |
+| **Charts** | **Recharts** | Weight-trend line chart on the Profile page. |
+| **Styling & HUD** | **Tailwind CSS v4 + Lucide Icons + Framer Motion** | Tactical dark HUD. Depth comes from a shared layered-shadow system (`.depth-elevated`) and a subtle perspective tilt on hover (`.depth-card`) that is disabled on touch devices and for reduced-motion users; section headers use a light Framer Motion scroll parallax. |
 
 ---
 
@@ -34,7 +35,7 @@
 
 ```
 ai-trainer/
-├── .env                                  # Master Environment Secrets (Supabase, Hugging Face, CORS)
+├── .env                                  # Master Environment Secrets (Supabase, Groq, Hugging Face, CORS)
 ├── .gitignore                            # Excludes venv, node_modules, dist, and secrets from Git
 ├── Procfile                              # Entrypoint command for cloud PaaS (Railway / Heroku)
 ├── requirements.txt                      # Python backend dependencies
@@ -46,7 +47,7 @@ ai-trainer/
 │   ├── main.py                           # Core API server, CORS configuration & route handlers
 │   └── services/
 │       ├── __init__.py                   # Package identifier
-│       ├── ai_service.py                 # Hybrid NLP food parser & kitchen pantry planner
+│       ├── ai_service.py                 # Groq-backed food parser, meal strategist & pantry planner (+ local fallback)
 │       ├── gamification_service.py       # Streaks evaluator & achievement badge unlocker
 │       ├── saved_meals_service.py        # CRUD templates for frequently consumed meals
 │       ├── supabase_client.py            # Supabase Auth & DB connection with safe fallback
@@ -63,15 +64,23 @@ ai-trainer/
         ├── App.css / index.css           # Global Tailwind directives & custom scrollbars
         ├── services/
         │   └── api.js                    # Resilient authenticated API client with auto-refresh
+        ├── hooks/
+        │   └── useCanHover.js            # matchMedia "(hover: hover) and (pointer: fine)" detector
         └── components/
-            ├── Dashboard.jsx             # Tactical Central HUD (Diet, Workout, Tracking)
-            ├── BottomTaskbar.jsx         # Persistent floating pillar dock with live metrics
+            ├── Dashboard.jsx             # Layout shell: shared state, header, status bar, <Outlet />, dock
+            ├── BottomTaskbar.jsx         # Fixed bottom nav: NavLink route switcher, safe-area aware
+            ├── sections/
+            │   ├── DietSection.jsx       # /dashboard/diet: macro rings, fuel log, saved meals, AI console
+            │   ├── WorkoutSection.jsx    # /dashboard/workouts: split selector, exercises, overload targets
+            │   ├── TrackersSection.jsx   # /dashboard/trackers: water + steps quick-log, daily habits
+            │   ├── ProfileSection.jsx    # /dashboard/profile: profile/targets editor, weight chart, log corrections
+            │   └── SectionHeader.jsx     # Section title with scroll parallax (pointer devices only)
             ├── LoginRegister.jsx         # Military-grade authentication screen (Login/Sign-up)
             ├── Onboarding.jsx            # Dynamic profile initialization & macro calculator
             ├── CustomSplitEditor.jsx     # Drag-and-drop / editable workout split customizer
             ├── AchievementsModal.jsx     # Badges & streak rewards showcase
             ├── NotFound.jsx              # Cybernetic 404 Error page (Eliminates dead ends)
-            └── TiltCard.jsx              # 3D interactive holographic card wrapper
+            └── TiltCard.jsx              # 3D tilt card wrapper (static elevated card on touch devices)
 ```
 
 ---
@@ -88,7 +97,9 @@ ai-trainer/
 
 #### `app/services/ai_service.py`
 - **Role**: Natural language meal parsing, recipe strategist, and pantry planning.
-- **Why this specific approach**: **Hybrid Architecture**. Cloud LLMs can suffer from latency, token costs, or rate limits. `ai_service.py` first attempts Hugging Face serverless inference with a strict 3-second timeout. If offline or rate-limited, it automatically falls back to an extensive built-in database of Indian and international foods (with gram-level macro weights for rotis, paneer, soya chunks, chicken breast, biryani, chana, etc.) ensuring **100% uptime and instant response**.
+- **Why this specific approach**: **Hybrid Architecture**. `ai_service.py` calls Groq (`GROQ_MODEL`, default `llama-3.1-8b-instant`) in JSON mode with an 8-second timeout and no SDK retries. The client is created lazily, so a missing `GROQ_API_KEY` degrades to the fallback instead of crashing startup. On any error, timeout or unparseable output it falls back to an extensive built-in database of Indian and international foods (gram-level macro weights for rotis, paneer, soya chunks, chicken breast, biryani, chana, etc.). Every response includes `"source": "llm"` or `"source": "fallback"` so the fallback rate is visible.
+- **Rounding (two layers)**: (1) Prompt layer: every system prompt carries the same rules (solids to the nearest 5g, liquids to the nearest 25ml, countable items to the nearest 0.5, max one decimal) and asks for kitchen-practical phrasing ("1 medium roti", "1/2 cup dal"). (2) Code layer: `_display_ingredient()` rounds each suggested ingredient quantity by unit before it reaches the frontend, keeping `quantity_exact` alongside and a ready-made `display` string ("35g paneer"). Macro totals are never computed from rounded quantities. The local fallback rounds its quantities with the same rules.
+- **Temperature**: 0.2 for food parsing (deterministic extraction), 0.7 for meal suggestions and pantry plans (variety between suggestions).
 
 #### `app/services/vector_memory_service.py`
 - **Role**: Stores workout performance history and calculates progressive overload targets.
@@ -115,7 +126,30 @@ ai-trainer/
 
 #### `ai-trainer-web/src/App.jsx`
 - **Role**: App root, routing coordinator, and session state manager.
-- **Why this specific approach**: Checks session validity on startup via `api.getProfile()`. If profile details are incomplete (fresh user), directs to `<Onboarding />`. If no token exists, presents `<LoginRegister />`. If authenticated, mounts `<Dashboard />` wrapped with the persistent `<BottomTaskbar />`. Contains a dedicated fallback route to `<NotFound />` for undefined paths.
+- **Why this specific approach**: Checks session validity on startup via `api.getProfile()`. If profile details are incomplete (fresh user), directs to `<Onboarding />`. If no token exists, presents `<LoginRegister />`. If authenticated, `/dashboard` mounts the `<Dashboard />` layout shell, and its child routes lazy-load one section each:
+
+  | Route | Component | Contents |
+  | :--- | :--- | :--- |
+  | `/dashboard` | redirect | → `/dashboard/diet` |
+  | `/dashboard/diet` | `DietSection` | Macro rings, AI food parser, fuel log (remove with confirm), saved meals, AI strategist & pantry planner |
+  | `/dashboard/workouts` | `WorkoutSection` | Split selector, exercise checklist with overload targets, quick-add, custom split editor, session summary |
+  | `/dashboard/trackers` | `TrackersSection` | Water + steps quick-log widgets, daily streak habits |
+  | `/dashboard/profile` | `ProfileSection` | Onboarding data + daily targets with edit mode, weight logging + trend chart, corrections to the selected day's meals/water/steps |
+
+  Legacy URLs (`/`, `/food-log`, `/diet`, `/pantry-ai`, `/workouts`, `/progress`, `/profile`) redirect to their section. Undefined paths fall through to `<NotFound />`.
+
+#### `ai-trainer-web/src/components/Dashboard.jsx` (layout shell)
+- **Role**: Owns the state every section shares (selected date, profile, the day's log, badges, derived targets/consumed/remaining macros) and renders the header, status bar, achievements modal, `<Outlet />` and `<BottomTaskbar />`.
+- **Why this specific approach**: Sections read shared state via `useOutletContext()` (`date`, `profile`, `setProfile`, `log`, `setLog`, `refresh`, `checkBadgeUnlocks`, `handleToggleHabit`, `stats`, `setError`) and keep their own local UI state, so only the visible section is mounted. Section-specific data (saved meals, custom splits, weight history) loads in the section that uses it.
+
+#### `ai-trainer-web/src/components/BottomTaskbar.jsx`
+- **Role**: Fixed bottom navigation (`position: fixed; bottom: 0`) and the dashboard's route switcher: one `<NavLink>` per section with active-route highlighting.
+- **Why this specific approach**: Padding follows `env(safe-area-inset-bottom)` (with `viewport-fit=cover` in `index.html`) so the dock clears the iOS home indicator and Android gesture bar. It takes `profile`/`log` from the shell instead of fetching its own, and page content reserves space with the `.pb-dock` utility.
+
+#### Mobile & depth conventions
+- `TiltCard` and `SectionHeader` check `useCanHover()` (`matchMedia("(hover: hover) and (pointer: fine)")`). On touch devices they render static: no pointer listeners, springs or scroll-linked transforms.
+- `.depth-card` hover tilt lives in a `@media (hover: hover) and (pointer: fine)` block and is disabled under `prefers-reduced-motion`.
+- Layouts use asymmetric 7/5 and 8/4 grid splits with offset rails rather than symmetric card grids.
 
 #### `ai-trainer-web/src/components/NotFound.jsx`
 - **Role**: Tactical 404 Error page.
@@ -132,10 +166,15 @@ ai-trainer/
 | `POST` | `/api/auth/login` | User authentication & JWT issuance | None | `auth.users` |
 | `POST` | `/api/auth/refresh` | Silent JWT session token refresh | None | `auth.users` |
 | `GET` | `/api/profile` | Retrieve athlete profile & target macros | Bearer JWT | `public.profiles` |
-| `POST` | `/api/profile` | Save or update profile & target macros | Bearer JWT | `public.profiles` |
+| `POST` | `/api/profile` | Save full profile & target macros (onboarding) | Bearer JWT | `public.profiles` |
+| `PATCH` | `/api/profile` | Partial profile/target update (Profile page edit mode) | Bearer JWT | `public.profiles` |
 | `GET` | `/api/logs/daily?date=YYYY-MM-DD` | Get day's meals, habit trackers, and workout status | Bearer JWT | `public.daily_logs` |
 | `POST` | `/api/logs/trackers` | Update water, steps, weight, or workout completion | Bearer JWT | `public.daily_logs`, `public.user_badges` |
-| `POST` | `/api/logs/meals` | Append a logged meal to day's log | Bearer JWT | `public.daily_logs`, `public.user_badges` |
+| `POST` | `/api/logs/meals` | Append a logged meal to day's log (id `m_<uuid>`) | Bearer JWT | `public.daily_logs`, `public.user_badges` |
+| `PATCH` | `/api/logs/meals/{meal_id}?date=&index=` | Edit a logged meal's name/macros | Bearer JWT | `public.daily_logs` |
+| `DELETE` | `/api/logs/meals/{meal_id}?date=&index=` | Remove a logged meal (`index` disambiguates legacy duplicate ids) | Bearer JWT | `public.daily_logs` |
+| `GET` | `/api/weight-logs?limit=90` | Weight history, newest first | Bearer JWT | `public.weight_logs` |
+| `POST` | `/api/weight-logs` | Upsert one weight per day on `(user_id, log_date)`; today's entry also updates `profiles.weight_kg` | Bearer JWT | `public.weight_logs`, `public.profiles` |
 | `GET` | `/api/workouts?split=SPLIT_NAME` | Fetch exercises for split (catalog or custom) | Bearer JWT | `public.custom_splits` |
 | `GET` | `/api/workouts/progression-target?exercise_name=NAME` | Compute next progressive overload target | Bearer JWT | Vector Store / DB |
 | `POST` | `/api/workouts/record-performance` | Save completed exercise sets, reps, weight | Bearer JWT | Vector Store / DB |
@@ -145,9 +184,9 @@ ai-trainer/
 | `POST` | `/api/saved-meals` | Create reusable saved meal template | Bearer JWT | `public.saved_meals` |
 | `DELETE`| `/api/saved-meals/{meal_id}` | Remove saved meal template | Bearer JWT | `public.saved_meals` |
 | `GET` | `/api/badges` | Fetch all badges and user unlock timestamps | Bearer JWT | `public.badges`, `public.user_badges` |
-| `POST` | `/api/ai/parse-food` | Parse natural language food text into macros | Bearer JWT / None | Nutrition Database / HF |
-| `POST` | `/api/ai/meal-suggestion` | Synthesize targeted macro recipe | None | Nutrition Database / HF |
-| `POST` | `/api/ai/pantry-planner` | Generate full-day plan from kitchen ingredients | None | Nutrition Database / HF |
+| `POST` | `/api/ai/parse-food` | Parse natural language food text into macros | Bearer JWT / None | Groq / Nutrition Database |
+| `POST` | `/api/ai/meal-suggestion` | Synthesize targeted macro recipe (optional `pantry_items`; returns rounded `ingredients`) | None | Groq / Nutrition Database |
+| `POST` | `/api/ai/pantry-planner` | Generate full-day plan from kitchen ingredients | None | Groq / Nutrition Database |
 
 ---
 
@@ -161,7 +200,7 @@ sequenceDiagram
     participant API as api.js Gateway
     participant Backend as FastAPI Backend
     participant Supabase as Supabase (Auth + Postgres)
-    participant AI as Hugging Face / Heuristics
+    participant AI as Groq / Local Food DB
 
     User->>Frontend: Enter credentials & click Login
     Frontend->>API: api.login(email, password)
@@ -193,6 +232,19 @@ sequenceDiagram
 
 ---
 
+### 4.1 Database Tables Added in Phase 2 (`schema_phase2.sql`)
+
+| Table | Key Columns | Notes |
+| :--- | :--- | :--- |
+| `saved_meals` | `user_id`, `name`, macros | 1-click meal templates |
+| `badges` / `user_badges` | `badge_id`, `unlocked_at` | Seeded badge catalog + per-user unlocks |
+| `custom_splits` | `user_id`, `split_name`, `exercises` (JSONB) | User-defined workout splits |
+| `weight_logs` | `user_id`, `log_date`, `weight_kg` NUMERIC(5,2), `UNIQUE (user_id, log_date)` | One entry per user per day; RLS select/insert/update own rows; index on `(user_id, log_date DESC)` |
+
+The migration file is idempotent (`IF NOT EXISTS` guards on tables, policies and indexes), so it can be re-run safely in the Supabase SQL Editor.
+
+---
+
 ## 5. Fault-Isolation & Troubleshooting Guide
 
 When an error occurs, use this rapid triage matrix to identify and resolve the issue immediately:
@@ -205,6 +257,8 @@ When an error occurs, use this rapid triage matrix to identify and resolve the i
 | **`Missing Supabase configuration keys`** | `app/services/supabase_client.py` | `.env` file missing `SUPABASE_URL`, `SUPABASE_ANON_KEY`, or `SUPABASE_SERVICE_KEY`. | Verify `.env` exists in the workspace root with all three keys populated. |
 | **404 Page Not Found on page refresh online** | `ai-trainer-web/vercel.json` | Cloud host treating client-side route as a missing physical file. | Ensure `vercel.json` contains the SPA rewrite rule `{"source": "/(.*)", "destination": "/index.html"}`. |
 | **`NameError` or missing package on startup** | `app/main.py` or `requirements.txt` | Missing import statement or uninstalled dependency in virtualenv. | Run `python -c "import app.main"` to view exact missing imports, and run `pip install -r requirements.txt`. |
+| **Weight log fails with `relation "weight_logs" does not exist`** | Supabase | The Phase 2 migration was not re-run after `weight_logs` was added. | Run `schema_phase2.sql` again in the Supabase SQL Editor (safe to re-run). |
+| **Old bookmark like `/workouts` shows the wrong page** | `ai-trainer-web/src/App.jsx` | Pillars moved under `/dashboard/*`. | Legacy paths redirect automatically; update bookmarks to `/dashboard/<section>`. |
 | **AI Food Parsing returns fallback defaults** | `app/services/ai_service.py` | Groq API key missing, request timed out (8s) or returned invalid JSON. Responses carry `"source": "fallback"` when this happens. | Check `GROQ_API_KEY` in `.env` and the server logs for `Groq call failed`. AuraTrainer will safely fallback to its built-in Indian & Global nutritional lookup table without interrupting the user. |
 
 ---
