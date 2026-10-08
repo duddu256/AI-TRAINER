@@ -360,6 +360,51 @@ def _extract_and_parse_json(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def diagnose_ai_providers() -> Dict[str, Any]:
+    """
+    Live check of the AI providers for GET /api/health/ai: confirms the keys are present and
+    that a real (tiny) request succeeds, returning the provider's error text when it doesn't.
+    Never returns key values.
+    """
+    report: Dict[str, Any] = {}
+
+    groq_info: Dict[str, Any] = {"configured": bool(os.getenv("GROQ_API_KEY")), "model": GROQ_MODEL, "ok": False}
+    client = _get_groq_client()
+    if client is None:
+        groq_info["error"] = "GROQ_API_KEY is not set on the server"
+    else:
+        try:
+            response = client.chat.completions.create(
+                model=GROQ_MODEL,
+                messages=[{"role": "user", "content": 'Reply with the JSON {"ok": true}'}],
+                response_format={"type": "json_object"},
+                max_tokens=10,
+                temperature=0,
+                timeout=GROQ_TIMEOUT_SECONDS,
+            )
+            groq_info["ok"] = bool(_extract_and_parse_json(response.choices[0].message.content))
+        except Exception as e:
+            groq_info["error"] = f"{type(e).__name__}: {str(e)[:300]}"
+    report["groq"] = groq_info
+
+    import requests
+    from app.services.usda_service import FDC_SEARCH_URL, USDA_TIMEOUT_SECONDS
+    usda_info: Dict[str, Any] = {"configured": bool(os.getenv("USDA_API_KEY")), "ok": False}
+    try:
+        resp = requests.get(
+            FDC_SEARCH_URL,
+            params={"api_key": os.getenv("USDA_API_KEY") or "DEMO_KEY", "query": "rice", "pageSize": 1},
+            timeout=USDA_TIMEOUT_SECONDS,
+        )
+        usda_info["ok"] = resp.status_code == 200
+        if not usda_info["ok"]:
+            usda_info["error"] = f"HTTP {resp.status_code}: {resp.text[:200]}"
+    except Exception as e:
+        usda_info["error"] = f"{type(e).__name__}: {str(e)[:300]}"
+    report["usda"] = usda_info
+    return report
+
+
 def _call_groq_llm(system_prompt: str, user_prompt: str, temperature: float = 0.7) -> Optional[Dict[str, Any]]:
     """
     Calls Groq in JSON mode and returns the parsed object, or None so callers fall back
@@ -386,33 +431,95 @@ def _call_groq_llm(system_prompt: str, user_prompt: str, temperature: float = 0.
         return None
 
 
+# Typical edible weight (g, or ml for drinks) of one unit of the per-piece entries, so a
+# gram/ml quantity ("100g paratha") converts to pieces instead of being read as a count.
+# Fats are per tablespoon; whey / protein powder per scoop.
+PIECE_GRAMS = {
+    "roti": 40, "rotis": 40, "phulka": 35, "phulkas": 35, "chapati": 40, "chapatis": 40,
+    "paratha": 80, "parathas": 80, "plain paratha": 80, "aloo paratha": 120, "paneer paratha": 120,
+    "naan": 90, "butter naan": 95, "puri": 25, "poori": 25, "dosa": 100, "masala dosa": 180,
+    "idli": 40, "idlis": 40, "besan cheela": 80, "besan chilla": 80,
+    "egg": 50, "eggs": 50, "whole egg": 50, "whole eggs": 50, "boiled egg": 50, "boiled eggs": 50,
+    "egg white": 33, "egg whites": 33, "egg bhurji": 120, "egg curry": 180,
+    "bread": 30, "toast": 30, "sourdough bread": 50, "sandwich": 150, "burger": 200, "pizza": 110,
+    "banana": 120, "kela": 120, "apple": 180,
+    "ghee": 14, "desi ghee": 14, "butter": 14, "oil": 14, "olive oil": 14, "mustard oil": 14,
+    "peanut butter": 16, "whey": 30, "whey protein": 30, "protein powder": 30,
+    "chai": 150, "masala chai": 150, "tea": 150,
+}
+_DEFAULT_PIECE_GRAMS = 50.0
+_TBSP_GRAMS = 15.0
+
+# Generic macros per 100g for foods in neither the table nor any lookup (a mixed home-cooked dish).
+_GENERIC_PER_100G = {"cals": 150, "p": 8.0, "c": 18.0, "f": 4.0}
+
+
+def _match_food_key(name: str) -> Optional[str]:
+    """
+    Finds the FOOD_DATABASE key for a food name:
+      1. the longest key that appears in the name as whole words ("paneer bhurji" -> "paneer bhurji",
+         never the reverse "paneer" -> "paneer paratha");
+      2. otherwise a close spelling match on the whole name or any word ("panner" -> "paneer").
+    """
+    import difflib
+
+    lowered = re.sub(r"\s+", " ", name.lower()).strip()
+    if not lowered:
+        return None
+    padded = f" {lowered} "
+    for key in sorted(FOOD_DATABASE.keys(), key=len, reverse=True):
+        if re.search(r"\b" + re.escape(key) + r"\b", padded):
+            return key
+
+    keys = list(FOOD_DATABASE.keys())
+    close = difflib.get_close_matches(lowered, keys, n=1, cutoff=0.82)
+    if close:
+        return close[0]
+    single_word_keys = [k for k in keys if " " not in k]
+    for word in sorted(lowered.split(), key=len, reverse=True):
+        if len(word) < 4:
+            continue
+        close = difflib.get_close_matches(word, single_word_keys, n=1, cutoff=0.8)
+        if close:
+            return close[0]
+    return None
+
+
+def _portion_multiplier(key: Optional[str], base_unit: int, qty: float, unit_type: str) -> float:
+    """
+    How many of the entry's base servings were eaten. unit_type is one of
+    "grams", "ml", "tbsp" or "items" (a count of pieces / servings).
+    """
+    if unit_type in ("grams", "ml"):
+        if base_unit == 1:
+            return qty / float(PIECE_GRAMS.get(key, _DEFAULT_PIECE_GRAMS))
+        return qty / float(base_unit)
+    if unit_type == "tbsp":
+        if base_unit == 1:
+            return qty if PIECE_GRAMS.get(key) == 14 else qty * _TBSP_GRAMS / float(PIECE_GRAMS.get(key, _DEFAULT_PIECE_GRAMS))
+        return qty * _TBSP_GRAMS / float(base_unit)
+    # Counted pieces / servings: one base serving each.
+    return qty
+
+
 # Units that mean "count of pieces" rather than a weight/volume.
 _COUNT_UNITS = {"", "piece", "pieces", "pc", "pcs", "item", "items", "whole", "nos", "no", "unit", "units",
                 "scoop", "scoops", "slice", "slices", "serving", "servings", "egg", "eggs"}
 
 
-def _local_db_match(name: str) -> Optional[Dict[str, Any]]:
-    """Longest FOOD_DATABASE key appearing as whole words in the item name."""
-    lowered = f" {name.lower()} "
-    for key in sorted(FOOD_DATABASE.keys(), key=len, reverse=True):
-        if re.search(r"\b" + re.escape(key) + r"\b", lowered):
-            return FOOD_DATABASE[key]
-    return None
-
-
-def _macros_from_local(entry: Dict[str, Any], quantity: float, unit: str, grams: float) -> Optional[Dict[str, float]]:
-    """Scales a FOOD_DATABASE entry to the eaten portion, or None if the units can't be reconciled."""
+def _macros_from_local(name: str, quantity: float, unit: str, grams: float) -> Optional[Dict[str, float]]:
+    """Scales the matching FOOD_DATABASE entry to the eaten portion, or None if there is no match."""
+    key = _match_food_key(name)
+    if key is None:
+        return None
+    entry = FOOD_DATABASE[key]
     unit = unit.lower().strip()
-    base = entry["unit"]
-    if base == 1:
-        # Per-piece entry (roti, egg, scoop): needs a count.
-        if unit in _COUNT_UNITS and quantity > 0:
-            multiplier = quantity
-        else:
-            return None
+    if unit in _COUNT_UNITS and quantity > 0 and entry["unit"] == 1:
+        multiplier = quantity
     elif grams > 0:
-        # Per-100g, per-glass (200/240ml) and per-oz (28g) entries scale by weight.
-        multiplier = grams / float(base)
+        multiplier = _portion_multiplier(key, entry["unit"], grams, "grams")
+    elif unit in _COUNT_UNITS and quantity > 0:
+        multiplier = quantity
     else:
         return None
     return {
@@ -449,7 +556,7 @@ def _resolve_food_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "name": str(raw.get("name")).strip(),
             "quantity": _to_float(raw.get("quantity")),
             "unit": str(raw.get("unit", "") or ""),
-            "grams": max(0.0, _to_float(raw.get("grams"))),
+            "grams": _to_float(raw.get("grams")) if 0 < _to_float(raw.get("grams")) <= 2500 else 0.0,
             "usda_query": str(raw.get("usda_query") or raw.get("name")).strip(),
             "estimate": raw.get("estimated_macros") or {},
         })
@@ -458,8 +565,7 @@ def _resolve_food_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     sources = [""] * len(prepared)
     usda_needed = []
     for i, item in enumerate(prepared):
-        entry = _local_db_match(item["name"])
-        local = _macros_from_local(entry, item["quantity"], item["unit"], item["grams"]) if entry else None
+        local = _macros_from_local(item["name"], item["quantity"], item["unit"], item["grams"])
         if local:
             resolved[i], sources[i] = local, "local_db"
         elif item["grams"] > 0:
@@ -629,57 +735,33 @@ def parse_food_string(input_text: str) -> Dict[str, Any]:
         # Clean noise words
         item_name = re.sub(r'\b(of|fresh|cooked|raw|baked|grilled|steamed|seared|whole|slices?|pieces?|desi|boiled|fried|tadka|ghar ka)\b', '', item_name).strip()
 
-        # Match against food database prioritizing longest matching keys
-        matched_food = None
-        for key in sorted(FOOD_DATABASE.keys(), key=lambda k: len(k), reverse=True):
-            if key in item_name or item_name in key:
-                matched_food = (key, FOOD_DATABASE[key])
-                break
+        # Match against the food table (whole words first, then close spellings)
+        key = _match_food_key(item_name) if item_name else None
 
-        if matched_food:
-            key, val = matched_food
+        if key:
+            val = FOOD_DATABASE[key]
             found_items.append(val["name"])
-            multiplier = 1.0
-
-            if val["unit"] == 1:
-                # Per item/piece/roti/scoop/tbsp
-                multiplier = qty
-            elif val["unit"] == 200 or val["unit"] == 240:
-                # Liquid volume (glass, cup, or ml)
-                if unit_type == "ml":
-                    multiplier = qty / float(val["unit"])
-                elif unit_type == "grams":
-                    multiplier = qty / float(val["unit"])
-                else:
-                    multiplier = qty
-            elif val["unit"] == 28:
-                # 1 oz serving (nuts, cheese)
-                if unit_type == "grams":
-                    multiplier = qty / 28.0
-                else:
-                    multiplier = qty
-            else:
-                # 100g base serving
-                if unit_type == "grams":
-                    multiplier = qty / 100.0
-                elif unit_type == "items":
-                    multiplier = qty
-                else:
-                    multiplier = qty
-
-            total_cals += int(val["cals"] * multiplier)
-            total_protein += val["p"] * multiplier
-            total_carbs += val["c"] * multiplier
-            total_fat += val["f"] * multiplier
+            multiplier = _portion_multiplier(key, val["unit"], qty, unit_type)
+            per = {"cals": val["cals"], "p": val["p"], "c": val["c"], "f": val["f"]}
         else:
-            # Fallback estimation for unrecognized ingredient item
+            # Unrecognised item: generic home-cooked dish, scaled per 100g for weights
+            # (previously 150 kcal *per gram* when a weight was given).
             clean_item_name = item_name.strip().title()
-            if clean_item_name:
-                found_items.append(clean_item_name)
-                total_cals += int(150 * qty)
-                total_protein += 8.0 * qty
-                total_carbs += 18.0 * qty
-                total_fat += 4.0 * qty
+            if not clean_item_name:
+                continue
+            found_items.append(clean_item_name)
+            per = _GENERIC_PER_100G
+            if unit_type in ("grams", "ml"):
+                multiplier = qty / 100.0
+            elif unit_type == "tbsp":
+                multiplier = qty * _TBSP_GRAMS / 100.0
+            else:
+                multiplier = qty  # one ~100g serving per counted item
+
+        total_cals += int(round(per["cals"] * multiplier))
+        total_protein += per["p"] * multiplier
+        total_carbs += per["c"] * multiplier
+        total_fat += per["f"] * multiplier
 
     inferred_name = " + ".join(found_items[:3]) if found_items else cleaned[:35].title()
 

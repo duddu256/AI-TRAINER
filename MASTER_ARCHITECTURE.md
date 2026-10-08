@@ -106,6 +106,7 @@ ai-trainer/
   3. `llm_estimate`: the model's own estimate, used only when neither source matches.
 
   The response keeps the old totals (`macros`, `calories`, ...) and adds `items[]` with per-item `display`, `grams`, `macro_source` and `matched_food`. If Groq itself fails, the whole parse falls back to the fully local tokenizer (`source: "fallback"`).
+- **Offline parser**: `_match_food_key()` matches whole words longest-first (so "paneer" never resolves to "paneer paratha"), then close spellings ("panner" → paneer). `_portion_multiplier()` converts grams/ml/tbsp to servings, using `PIECE_GRAMS` (typical weight of one roti, egg, paratha, tbsp of ghee, etc.) for per-piece entries. Unrecognised foods are estimated per 100g, not per gram.
 - **Temperature**: 0.2 for food parsing (deterministic extraction), 0.7 for meal suggestions and pantry plans (variety between suggestions).
 
 #### `app/services/usda_service.py`
@@ -173,6 +174,7 @@ ai-trainer/
 | HTTP Method | Route Endpoint | Purpose | Required Auth | DB Tables Involved |
 | :--- | :--- | :--- | :--- | :--- |
 | `GET` | `/` and `/health` | Cloud health probe check | None | None |
+| `GET` | `/api/health/ai` | Live Groq + USDA check: key present, tiny real request, provider error text if failing (never returns keys) | None | None |
 | `POST` | `/api/auth/register` | User sign-up | None | `auth.users` |
 | `POST` | `/api/auth/login` | User authentication & JWT issuance | None | `auth.users` |
 | `POST` | `/api/auth/refresh` | Silent JWT session token refresh | None | `auth.users` |
@@ -271,7 +273,7 @@ When an error occurs, use this rapid triage matrix to identify and resolve the i
 | **Weight log fails with `relation "weight_logs" does not exist`** | Supabase | The Phase 2 migration was not re-run after `weight_logs` was added. | Run `schema_phase2.sql` again in the Supabase SQL Editor (safe to re-run). |
 | **Old bookmark like `/workouts` shows the wrong page** | `ai-trainer-web/src/App.jsx` | Pillars moved under `/dashboard/*`. | Legacy paths redirect automatically; update bookmarks to `/dashboard/<section>`. |
 | **Parsed items all show "AI ESTIMATE", never USDA** | `app/services/usda_service.py` | `USDA_API_KEY` missing (DEMO_KEY rate limit hit) or USDA unreachable. | Set `USDA_API_KEY` on the backend host and check logs for `USDA lookup failed`. Parsing still works using local-table and AI estimates. |
-| **AI Food Parsing returns fallback defaults** | `app/services/ai_service.py` | Groq API key missing, request timed out (8s) or returned invalid JSON. Responses carry `"source": "fallback"` when this happens. | Check `GROQ_API_KEY` in `.env` and the server logs for `Groq call failed`. AuraTrainer will safely fallback to its built-in Indian & Global nutritional lookup table without interrupting the user. |
+| **AI Food Parsing returns fallback defaults ("OFFLINE ENGINE" tag)** | `app/services/ai_service.py` | Groq API key missing or invalid, model retired, request timed out (8s) or returned invalid JSON. Responses carry `"source": "fallback"` when this happens. | Open `https://<backend>/api/health/ai`: it shows whether the key is loaded and Groq's exact error. If the model was retired, set `GROQ_MODEL` to a current JSON-mode model. Server logs show `Groq call failed`. AuraTrainer will safely fallback to its built-in Indian & Global nutritional lookup table without interrupting the user. |
 
 ---
 

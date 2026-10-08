@@ -686,6 +686,14 @@ export default function DietSection() {
                       <span className="text-[8px] font-black tracking-widest text-cyan-400 uppercase">
                         PARSED INGREDIENT PROFILE
                       </span>
+                      {nlParsedResult.source === "fallback" && (
+                        <span
+                          className="ml-2 text-[8px] font-black tracking-[0.2em] text-amber-300 uppercase bg-amber-950/40 border border-amber-500/30 px-2 py-0.5 rounded"
+                          title="AI parser unavailable; estimated with the offline food table"
+                        >
+                          OFFLINE ENGINE
+                        </span>
+                      )}
                       <h4 className="text-sm font-black text-white uppercase italic mt-0.5">
                         {nlParsedResult.inferred_name}
                       </h4>

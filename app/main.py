@@ -6,6 +6,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 from app.services.supabase_client import supabase_auth, supabase_db
 from app.services.ai_service import (
+    diagnose_ai_providers,
     parse_food_string,
     generate_pantry_full_day_plan,
     generate_strategist_meal_suggestion
@@ -216,6 +217,14 @@ async def health_check():
     }
 
 # --- CORE USER ROUTES ---
+
+@app.get("/api/health/ai")
+def ai_health_check():
+    """
+    Live check that Groq and USDA FoodData Central are reachable with the configured keys.
+    Open this in a browser after deploying; `ok: false` comes with the provider's error.
+    """
+    return diagnose_ai_providers()
 
 @app.post("/api/auth/register", status_code=status.HTTP_201_CREATED)
 async def register_user(user: UserAuth):
