@@ -2,7 +2,7 @@ import os
 from fastapi import FastAPI, HTTPException, Depends, status, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from app.services.supabase_client import supabase_auth, supabase_db
 from app.services.ai_service import (
     parse_food_string,
@@ -149,6 +149,11 @@ class MealSuggestionRequest(BaseModel):
     fat_g: float
     fitness_goals: str = "Hypertrophy"
     prompt: Optional[str] = None
+    pantry_items: Optional[List[str]] = None
+
+class WeightLogEntry(BaseModel):
+    weight_kg: float = Field(gt=0, lt=500)
+    log_date: Optional[date_type] = None
 
 class ParseFoodRequest(BaseModel):
     input_text: str
@@ -554,6 +559,40 @@ async def log_meal(meal_data: MealLog, current_user = Depends(get_current_user))
     except Exception as e:
         raise handle_db_or_auth_error(e, status.HTTP_400_BAD_REQUEST)
 
+@app.post("/api/logs/weight")
+async def log_weight(entry: WeightLogEntry, current_user = Depends(get_current_user)):
+    """
+    Upserts today's (or the given day's) body weight. Re-entering on the same day overwrites
+    the earlier value via the UNIQUE (user_id, log_date) constraint.
+    """
+    log_date = str(entry.log_date or date_type.today())
+    try:
+        res = supabase_db.table("weight_logs").upsert(
+            {"user_id": current_user.id, "log_date": log_date, "weight_kg": round(entry.weight_kg, 2)},
+            on_conflict="user_id,log_date"
+        ).execute()
+        return {"status": "Weight logged!", "data": next(iter(res.data), {})}
+    except Exception as e:
+        raise handle_db_or_auth_error(e, status.HTTP_400_BAD_REQUEST)
+
+@app.get("/api/logs/weight")
+async def get_weight_history(limit: int = 90, current_user = Depends(get_current_user)):
+    """
+    Returns the user's most recent weight entries, newest first.
+    """
+    try:
+        res = (
+            supabase_db.table("weight_logs")
+            .select("log_date, weight_kg")
+            .eq("user_id", current_user.id)
+            .order("log_date", desc=True)
+            .limit(max(1, min(limit, 365)))
+            .execute()
+        )
+        return res.data or []
+    except Exception as e:
+        raise handle_db_or_auth_error(e, status.HTTP_400_BAD_REQUEST)
+
 # --- AI RECIPES ENGINE ---
 
 @app.post("/api/ai/meal-suggestion")
@@ -568,7 +607,8 @@ async def suggest_meal(request: MealSuggestionRequest):
             protein_g=request.protein_g,
             carbs_g=request.carbs_g,
             fat_g=request.fat_g,
-            fitness_goals=request.fitness_goals
+            fitness_goals=request.fitness_goals,
+            pantry_items=request.pantry_items
         )
         return recipe
     except Exception as e:

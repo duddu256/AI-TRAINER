@@ -205,7 +205,7 @@ When an error occurs, use this rapid triage matrix to identify and resolve the i
 | **`Missing Supabase configuration keys`** | `app/services/supabase_client.py` | `.env` file missing `SUPABASE_URL`, `SUPABASE_ANON_KEY`, or `SUPABASE_SERVICE_KEY`. | Verify `.env` exists in the workspace root with all three keys populated. |
 | **404 Page Not Found on page refresh online** | `ai-trainer-web/vercel.json` | Cloud host treating client-side route as a missing physical file. | Ensure `vercel.json` contains the SPA rewrite rule `{"source": "/(.*)", "destination": "/index.html"}`. |
 | **`NameError` or missing package on startup** | `app/main.py` or `requirements.txt` | Missing import statement or uninstalled dependency in virtualenv. | Run `python -c "import app.main"` to view exact missing imports, and run `pip install -r requirements.txt`. |
-| **AI Food Parsing returns fallback defaults** | `app/services/ai_service.py` | Hugging Face token missing or model endpoint busy. | Check `HUGGINGFACE_API_KEY` in `.env`. AuraTrainer will safely fallback to its built-in Indian & Global nutritional lookup table without interrupting the user. |
+| **AI Food Parsing returns fallback defaults** | `app/services/ai_service.py` | Groq API key missing, request timed out (8s) or returned invalid JSON. Responses carry `"source": "fallback"` when this happens. | Check `GROQ_API_KEY` in `.env` and the server logs for `Groq call failed`. AuraTrainer will safely fallback to its built-in Indian & Global nutritional lookup table without interrupting the user. |
 
 ---
 
@@ -222,7 +222,9 @@ When an error occurs, use this rapid triage matrix to identify and resolve the i
    - `SUPABASE_URL`: `https://your-project.supabase.co`
    - `SUPABASE_ANON_KEY`: `your-anon-key`
    - `SUPABASE_SERVICE_KEY`: `your-service-role-key`
-   - `HUGGINGFACE_API_KEY`: `your-hf-key`
+   - `GROQ_API_KEY`: `your-groq-key` (LLM for parse-food, pantry-planner and meal-suggestion)
+   - `GROQ_MODEL` (optional): defaults to `llama-3.1-8b-instant`; must support JSON mode
+   - `HUGGINGFACE_API_KEY`: `your-hf-key` (still used for vector memory embeddings)
    - `ALLOWED_ORIGINS`: `https://your-frontend-app.vercel.app`
 5. Test: Navigate to `https://your-backend.up.railway.app/health` to receive `{"status": "online"}`.
 
