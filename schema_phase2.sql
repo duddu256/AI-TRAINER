@@ -89,3 +89,40 @@ DO $$ BEGIN
         ON public.custom_splits FOR ALL USING (auth.uid() = user_id);
     END IF;
 END $$;
+
+-- 4. WEIGHT LOGS TABLE (one entry per user per day; backend upserts on (user_id, log_date))
+CREATE TABLE IF NOT EXISTS public.weight_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    log_date DATE NOT NULL DEFAULT CURRENT_DATE,
+    weight_kg NUMERIC(5,2) NOT NULL CHECK (weight_kg > 0 AND weight_kg < 500),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (user_id, log_date)
+);
+
+ALTER TABLE public.weight_logs ENABLE ROW LEVEL SECURITY;
+
+DO $$ BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies WHERE tablename = 'weight_logs' AND policyname = 'Users can view own weight logs'
+    ) THEN
+        CREATE POLICY "Users can view own weight logs"
+        ON public.weight_logs FOR SELECT USING (auth.uid() = user_id);
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies WHERE tablename = 'weight_logs' AND policyname = 'Users can insert own weight logs'
+    ) THEN
+        CREATE POLICY "Users can insert own weight logs"
+        ON public.weight_logs FOR INSERT WITH CHECK (auth.uid() = user_id);
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_policies WHERE tablename = 'weight_logs' AND policyname = 'Users can update own weight logs'
+    ) THEN
+        CREATE POLICY "Users can update own weight logs"
+        ON public.weight_logs FOR UPDATE USING (auth.uid() = user_id);
+    END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_weight_logs_user_date ON public.weight_logs (user_id, log_date DESC);

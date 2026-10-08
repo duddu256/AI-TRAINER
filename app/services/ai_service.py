@@ -1,11 +1,102 @@
 import os
 import re
 import json
+import logging
 from typing import List, Dict, Any, Optional
 from dotenv import load_dotenv
 
 # Ensure environment variables are loaded
 load_dotenv()
+
+logger = logging.getLogger("auratrainer.ai")
+
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
+GROQ_TIMEOUT_SECONDS = 8.0
+
+# Groq client is created lazily so a missing GROQ_API_KEY degrades to the local
+# fallback engines instead of crashing the app on import.
+_groq_client = None
+
+
+def _get_groq_client():
+    global _groq_client
+    if _groq_client is None:
+        api_key = os.getenv("GROQ_API_KEY")
+        if not api_key:
+            return None
+        from groq import Groq
+        # No SDK retries: a failed call should drop straight to the fallback engine.
+        _groq_client = Groq(api_key=api_key, max_retries=0)
+    return _groq_client
+
+
+# Shared rounding rules injected into every system prompt (fixes the "34.2g paneer" precision problem at the source).
+ROUNDING_RULES = """Rounding rules (mandatory):
+- Solids: round to the nearest 5g (e.g. "35g paneer", not "34.2g")
+- Liquids: round to the nearest 25ml
+- Whole/countable items: round to the nearest 0.5 unit (e.g. "1.5 rotis")
+- Never output more than one decimal place under any circumstance
+- Prefer kitchen-practical phrasing where natural (e.g. "1 medium roti", "1/2 cup dal", "1 katori dahi") over precise gram weights"""
+
+JSON_ONLY_RULE = "Respond ONLY with valid JSON matching this exact schema, no prose, no markdown fences:"
+
+PARSE_FOOD_SYSTEM_PROMPT = f"""You are a food-log parser for AuraTrainer, proficient in Global and Indian foods (Rotis, Dals, Paneer, Soya Chunks, Biryanis, etc.).
+Split the user's free-text food log into individual food items. For each item give:
+- name: the food as the user would say it (e.g. "paneer bhurji", "roti")
+- quantity and unit as eaten (e.g. 2 "piece", 150 "g", 1 "bowl", 250 "ml")
+- grams: your best estimate of the item's total edible weight in grams (ml for liquids), e.g. 2 rotis = 80
+- usda_query: a short generic English name for a USDA FoodData Central search, using the closest
+  plain ingredient (e.g. "paneer" -> "cheese paneer", "roti" -> "bread whole wheat", "dal" -> "lentils cooked")
+- estimated_macros: your own estimate for the item's full portion (used only if no database match)
+
+{ROUNDING_RULES}
+
+{JSON_ONLY_RULE}
+{{
+  "inferred_name": string,
+  "items": [
+    {{
+      "name": string, "quantity": number, "unit": string, "grams": number, "usda_query": string,
+      "estimated_macros": {{"calories": number, "protein_g": number, "carbs_g": number, "fat_g": number}}
+    }}
+  ]
+}}"""
+
+PANTRY_PLANNER_SYSTEM_PROMPT = f"""You are a precision nutrition assistant for AuraTrainer, proficient in Global and Indian athletic diets.
+Given the user's daily macro targets and their current pantry inventory,
+build a full-day meal plan using ONLY ingredients listed in the pantry.
+
+{ROUNDING_RULES}
+
+{JSON_ONLY_RULE}
+{{
+  "plan_summary": string,
+  "meals": [
+    {{
+      "meal_slot": string,
+      "name": string,
+      "calories": number, "protein_g": number, "carbs_g": number, "fat_g": number,
+      "used_ingredients": [string],
+      "instructions": string
+    }}
+  ]
+}}"""
+
+MEAL_SUGGESTION_SYSTEM_PROMPT = f"""You are a precision nutrition assistant for AuraTrainer, proficient in Indian and International cuisines.
+Given the user's remaining macros for the day, their goal, an optional meal request and optionally their current pantry inventory,
+suggest one meal. If a pantry is provided, use ONLY ingredients listed in the pantry.
+
+{ROUNDING_RULES}
+
+{JSON_ONLY_RULE}
+{{
+  "meal_name": string,
+  "ingredients": [
+    {{"name": string, "quantity": number, "unit": string}}
+  ],
+  "macros": {{"calories": number, "protein_g": number, "carbs_g": number, "fat_g": number}},
+  "instructions": string
+}}"""
 
 # Comprehensive nutrient database including Global & Indian Standards (per 100g or standard unit/piece)
 FOOD_DATABASE = {
@@ -192,6 +283,46 @@ WORD_TO_NUM = {
 }
 
 
+def _round_to_step(value: float, step: float):
+    """Rounds to the nearest step (5g solids, 25ml liquids, 0.5 countables); returns int when whole."""
+    rounded = round(value / step) * step
+    return int(rounded) if float(rounded).is_integer() else round(rounded, 1)
+
+
+_SOLID_UNITS = {"g", "gm", "gms", "gram", "grams", "kg"}
+_LIQUID_UNITS = {"ml", "milliliter", "milliliters", "millilitre", "millilitres", "l", "litre", "liter"}
+
+
+def _display_ingredient(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Rounds an LLM ingredient quantity for display (5g solids, 25ml liquids, 0.5 countables)
+    while keeping the exact value, so macro math elsewhere is never done on rounded numbers.
+    """
+    name = str(raw.get("name", "")).strip()
+    unit = str(raw.get("unit", "")).strip()
+    try:
+        exact = float(raw.get("quantity", 0) or 0)
+    except (TypeError, ValueError):
+        exact = 0.0
+
+    unit_key = unit.lower()
+    if unit_key in _SOLID_UNITS:
+        if unit_key == "kg":
+            exact, unit, unit_key = exact * 1000, "g", "g"
+        shown = max(5, _round_to_step(exact, 5)) if exact > 0 else 0
+        display = f"{shown}g {name}"
+    elif unit_key in _LIQUID_UNITS:
+        if unit_key in {"l", "litre", "liter"}:
+            exact, unit = exact * 1000, "ml"
+        shown = max(25, _round_to_step(exact, 25)) if exact > 0 else 0
+        display = f"{shown}ml {name}"
+    else:
+        shown = max(0.5, _round_to_step(exact, 0.5)) if exact > 0 else 0
+        display = f"{shown} {unit} {name}".replace("  ", " ").strip()
+
+    return {"name": name, "quantity": shown, "quantity_exact": exact, "unit": unit, "display": display}
+
+
 def _extract_and_parse_json(text: str) -> Optional[Dict[str, Any]]:
     """
     Safely extracts and parses JSON payload from LLM responses handling markdown code blocks,
@@ -229,52 +360,256 @@ def _extract_and_parse_json(text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _call_huggingface_llm(system_prompt: str, user_prompt: str, timeout_seconds: float = 3.0) -> Optional[str]:
+def diagnose_ai_providers() -> Dict[str, Any]:
     """
-    Calls open-source LLM models via Hugging Face Serverless Inference Router.
-    Prioritizes top responsive instruct models with tight timeout protection.
+    Live check of the AI providers for GET /api/health/ai: confirms the keys are present and
+    that a real (tiny) request succeeds, returning the provider's error text when it doesn't.
+    Never returns key values.
     """
-    hf_token = os.getenv("HUGGINGFACE_API_KEY") or os.getenv("HF_TOKEN")
-    if not hf_token:
+    report: Dict[str, Any] = {}
+
+    groq_info: Dict[str, Any] = {"configured": bool(os.getenv("GROQ_API_KEY")), "model": GROQ_MODEL, "ok": False}
+    client = _get_groq_client()
+    if client is None:
+        groq_info["error"] = "GROQ_API_KEY is not set on the server"
+    else:
+        try:
+            response = client.chat.completions.create(
+                model=GROQ_MODEL,
+                messages=[{"role": "user", "content": 'Reply with the JSON {"ok": true}'}],
+                response_format={"type": "json_object"},
+                max_tokens=10,
+                temperature=0,
+                timeout=GROQ_TIMEOUT_SECONDS,
+            )
+            groq_info["ok"] = bool(_extract_and_parse_json(response.choices[0].message.content))
+        except Exception as e:
+            groq_info["error"] = f"{type(e).__name__}: {str(e)[:300]}"
+    report["groq"] = groq_info
+
+    import requests
+    from app.services.usda_service import FDC_SEARCH_URL, USDA_TIMEOUT_SECONDS
+    usda_info: Dict[str, Any] = {"configured": bool(os.getenv("USDA_API_KEY")), "ok": False}
+    try:
+        resp = requests.get(
+            FDC_SEARCH_URL,
+            params={"api_key": os.getenv("USDA_API_KEY") or "DEMO_KEY", "query": "rice", "pageSize": 1},
+            timeout=USDA_TIMEOUT_SECONDS,
+        )
+        usda_info["ok"] = resp.status_code == 200
+        if not usda_info["ok"]:
+            usda_info["error"] = f"HTTP {resp.status_code}: {resp.text[:200]}"
+    except Exception as e:
+        usda_info["error"] = f"{type(e).__name__}: {str(e)[:300]}"
+    report["usda"] = usda_info
+    return report
+
+
+def _call_groq_llm(system_prompt: str, user_prompt: str, temperature: float = 0.7) -> Optional[Dict[str, Any]]:
+    """
+    Calls Groq in JSON mode and returns the parsed object, or None so callers fall back
+    to the local engines (missing key, timeout, API error or unparseable output).
+    """
+    client = _get_groq_client()
+    if client is None:
         return None
 
     try:
-        from huggingface_hub import InferenceClient
-        client = InferenceClient(token=hf_token, timeout=timeout_seconds)
-
-        models = [
-            "Qwen/Qwen2.5-Coder-32B-Instruct",
-            "Qwen/Qwen2.5-72B-Instruct"
-        ]
-
-        for model in models:
-            try:
-                response = client.chat_completion(
-                    model=model,
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt}
-                    ],
-                    max_tokens=650,
-                    temperature=0.2
-                )
-                content = response.choices[0].message.content
-                if content:
-                    return content
-            except Exception as model_err:
-                print(f"[HuggingFace Inference] Model {model} attempt failed: {model_err}")
-                continue
-
+        response = client.chat.completions.create(
+            model=GROQ_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            response_format={"type": "json_object"},
+            temperature=temperature,
+            timeout=GROQ_TIMEOUT_SECONDS,
+        )
+        return _extract_and_parse_json(response.choices[0].message.content)
     except Exception as e:
-        print(f"[HuggingFace Inference] Client error: {e}")
+        logger.warning(f"Groq call failed, using fallback: {e}")
+        return None
 
+
+# Typical edible weight (g, or ml for drinks) of one unit of the per-piece entries, so a
+# gram/ml quantity ("100g paratha") converts to pieces instead of being read as a count.
+# Fats are per tablespoon; whey / protein powder per scoop.
+PIECE_GRAMS = {
+    "roti": 40, "rotis": 40, "phulka": 35, "phulkas": 35, "chapati": 40, "chapatis": 40,
+    "paratha": 80, "parathas": 80, "plain paratha": 80, "aloo paratha": 120, "paneer paratha": 120,
+    "naan": 90, "butter naan": 95, "puri": 25, "poori": 25, "dosa": 100, "masala dosa": 180,
+    "idli": 40, "idlis": 40, "besan cheela": 80, "besan chilla": 80,
+    "egg": 50, "eggs": 50, "whole egg": 50, "whole eggs": 50, "boiled egg": 50, "boiled eggs": 50,
+    "egg white": 33, "egg whites": 33, "egg bhurji": 120, "egg curry": 180,
+    "bread": 30, "toast": 30, "sourdough bread": 50, "sandwich": 150, "burger": 200, "pizza": 110,
+    "banana": 120, "kela": 120, "apple": 180,
+    "ghee": 14, "desi ghee": 14, "butter": 14, "oil": 14, "olive oil": 14, "mustard oil": 14,
+    "peanut butter": 16, "whey": 30, "whey protein": 30, "protein powder": 30,
+    "chai": 150, "masala chai": 150, "tea": 150,
+}
+_DEFAULT_PIECE_GRAMS = 50.0
+_TBSP_GRAMS = 15.0
+
+# Generic macros per 100g for foods in neither the table nor any lookup (a mixed home-cooked dish).
+_GENERIC_PER_100G = {"cals": 150, "p": 8.0, "c": 18.0, "f": 4.0}
+
+
+def _match_food_key(name: str) -> Optional[str]:
+    """
+    Finds the FOOD_DATABASE key for a food name:
+      1. the longest key that appears in the name as whole words ("paneer bhurji" -> "paneer bhurji",
+         never the reverse "paneer" -> "paneer paratha");
+      2. otherwise a close spelling match on the whole name or any word ("panner" -> "paneer").
+    """
+    import difflib
+
+    lowered = re.sub(r"\s+", " ", name.lower()).strip()
+    if not lowered:
+        return None
+    padded = f" {lowered} "
+    for key in sorted(FOOD_DATABASE.keys(), key=len, reverse=True):
+        if re.search(r"\b" + re.escape(key) + r"\b", padded):
+            return key
+
+    keys = list(FOOD_DATABASE.keys())
+    close = difflib.get_close_matches(lowered, keys, n=1, cutoff=0.82)
+    if close:
+        return close[0]
+    single_word_keys = [k for k in keys if " " not in k]
+    for word in sorted(lowered.split(), key=len, reverse=True):
+        if len(word) < 4:
+            continue
+        close = difflib.get_close_matches(word, single_word_keys, n=1, cutoff=0.8)
+        if close:
+            return close[0]
     return None
+
+
+def _portion_multiplier(key: Optional[str], base_unit: int, qty: float, unit_type: str) -> float:
+    """
+    How many of the entry's base servings were eaten. unit_type is one of
+    "grams", "ml", "tbsp" or "items" (a count of pieces / servings).
+    """
+    if unit_type in ("grams", "ml"):
+        if base_unit == 1:
+            return qty / float(PIECE_GRAMS.get(key, _DEFAULT_PIECE_GRAMS))
+        return qty / float(base_unit)
+    if unit_type == "tbsp":
+        if base_unit == 1:
+            return qty if PIECE_GRAMS.get(key) == 14 else qty * _TBSP_GRAMS / float(PIECE_GRAMS.get(key, _DEFAULT_PIECE_GRAMS))
+        return qty * _TBSP_GRAMS / float(base_unit)
+    # Counted pieces / servings: one base serving each.
+    return qty
+
+
+# Units that mean "count of pieces" rather than a weight/volume.
+_COUNT_UNITS = {"", "piece", "pieces", "pc", "pcs", "item", "items", "whole", "nos", "no", "unit", "units",
+                "scoop", "scoops", "slice", "slices", "serving", "servings", "egg", "eggs"}
+
+
+def _macros_from_local(name: str, quantity: float, unit: str, grams: float) -> Optional[Dict[str, float]]:
+    """Scales the matching FOOD_DATABASE entry to the eaten portion, or None if there is no match."""
+    key = _match_food_key(name)
+    if key is None:
+        return None
+    entry = FOOD_DATABASE[key]
+    unit = unit.lower().strip()
+    if unit in _COUNT_UNITS and quantity > 0 and entry["unit"] == 1:
+        multiplier = quantity
+    elif grams > 0:
+        multiplier = _portion_multiplier(key, entry["unit"], grams, "grams")
+    elif unit in _COUNT_UNITS and quantity > 0:
+        multiplier = quantity
+    else:
+        return None
+    return {
+        "calories": entry["cals"] * multiplier,
+        "protein_g": entry["p"] * multiplier,
+        "carbs_g": entry["c"] * multiplier,
+        "fat_g": entry["f"] * multiplier,
+    }
+
+
+def _to_float(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _resolve_food_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Gives every LLM-extracted item grounded macros, in priority order:
+      1. local_db   - hand-curated Indian & Global table (best for rotis, dals, paneer dishes)
+      2. usda       - USDA FoodData Central per-100g values scaled by the LLM's gram estimate
+      3. llm_estimate - the model's own estimate, only when neither source matches
+    USDA lookups run in parallel so a multi-item log costs one round trip.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from app.services.usda_service import lookup_per_100g
+
+    prepared = []
+    for raw in items:
+        if not isinstance(raw, dict) or not str(raw.get("name", "")).strip():
+            continue
+        prepared.append({
+            "name": str(raw.get("name")).strip(),
+            "quantity": _to_float(raw.get("quantity")),
+            "unit": str(raw.get("unit", "") or ""),
+            "grams": _to_float(raw.get("grams")) if 0 < _to_float(raw.get("grams")) <= 2500 else 0.0,
+            "usda_query": str(raw.get("usda_query") or raw.get("name")).strip(),
+            "estimate": raw.get("estimated_macros") or {},
+        })
+
+    resolved: List[Optional[Dict[str, float]]] = [None] * len(prepared)
+    sources = [""] * len(prepared)
+    usda_needed = []
+    for i, item in enumerate(prepared):
+        local = _macros_from_local(item["name"], item["quantity"], item["unit"], item["grams"])
+        if local:
+            resolved[i], sources[i] = local, "local_db"
+        elif item["grams"] > 0:
+            usda_needed.append(i)
+
+    if usda_needed:
+        with ThreadPoolExecutor(max_workers=min(6, len(usda_needed))) as pool:
+            hits = list(pool.map(lambda i: lookup_per_100g(prepared[i]["usda_query"]), usda_needed))
+        for i, hit in zip(usda_needed, hits):
+            if hit:
+                factor = prepared[i]["grams"] / 100.0
+                resolved[i] = {k: hit[k] * factor for k in ("calories", "protein_g", "carbs_g", "fat_g")}
+                resolved[i]["usda_description"] = hit.get("description")
+                sources[i] = "usda"
+
+    out = []
+    for i, item in enumerate(prepared):
+        macros = resolved[i]
+        if macros is None:
+            est = item["estimate"] if isinstance(item["estimate"], dict) else {}
+            macros = {k: _to_float(est.get(k)) for k in ("calories", "protein_g", "carbs_g", "fat_g")}
+            sources[i] = "llm_estimate"
+        shown = _display_ingredient({"name": item["name"], "quantity": item["quantity"], "unit": item["unit"]})
+        out.append({
+            "name": item["name"],
+            "display": shown["display"],
+            "grams": round(item["grams"]),
+            "macro_source": sources[i],
+            "matched_food": macros.get("usda_description"),
+            "calories": round(macros["calories"]),
+            "protein_g": round(macros["protein_g"], 1),
+            "carbs_g": round(macros["carbs_g"], 1),
+            "fat_g": round(macros["fat_g"], 1),
+            # Unrounded values feed the meal totals.
+            "_exact": macros,
+        })
+    return out
 
 
 def parse_food_string(input_text: str) -> Dict[str, Any]:
     """
     Parses unstructured food text (e.g. '3 rotis, 150g paneer bhurji, and 1 bowl dal' or '200g chicken breast with rice')
-    using Open-Source Hugging Face AI with high-precision Indian & Global semantic fallback.
+    using Groq for item extraction, macros grounded in the local food table and USDA FoodData Central,
+    with a fully local semantic fallback when Groq is unavailable.
     """
     cleaned = input_text.strip()
     if not cleaned:
@@ -284,35 +619,37 @@ def parse_food_string(input_text: str) -> Dict[str, Any]:
             "macros": {"calories": 0, "protein_g": 0.0, "carbs_g": 0.0, "fat_g": 0.0}
         }
 
-    # 1. Try Hugging Face Open-Source Model with 2.5s timeout
-    hf_system = (
-        "You are an elite sports nutritionist proficient in Global and Indian foods (Rotis, Dals, Paneer, Soya Chunks, Biryanis, etc.). "
-        "Output strict JSON with keys: "
-        "parsed_successfully (boolean), inferred_name (string), macros (object with integer calories, float protein_g, float carbs_g, float fat_g). "
-        "Do not include any extra text, only raw JSON."
-    )
+    # 1. Groq extracts items & portions; macros come from local DB -> USDA -> LLM estimate.
     try:
-        hf_response = _call_huggingface_llm(hf_system, f"Calculate macros for: '{cleaned}'", timeout_seconds=2.5)
-        if hf_response:
-            data = _extract_and_parse_json(hf_response)
-            if data and "macros" in data and "calories" in data["macros"]:
-                cal_val = int(data["macros"]["calories"])
-                p_val = round(float(data["macros"].get("protein_g", data["macros"].get("protein", 0))), 1)
-                c_val = round(float(data["macros"].get("carbs_g", data["macros"].get("carbs", 0))), 1)
-                f_val = round(float(data["macros"].get("fat_g", data["macros"].get("fat", 0))), 1)
-                if cal_val > 0 or p_val > 0:
-                    return {
-                        "parsed_successfully": True,
-                        "inferred_name": str(data.get("inferred_name", cleaned[:35])).upper(),
-                        "macros": {
-                            "calories": cal_val,
-                            "protein_g": p_val,
-                            "carbs_g": c_val,
-                            "fat_g": f_val
-                        }
+        data = _call_groq_llm(PARSE_FOOD_SYSTEM_PROMPT, f"Food log: '{cleaned}'", temperature=0.2)
+        items = _resolve_food_items(data.get("items") or []) if data else []
+        if items:
+            totals = {k: sum(item["_exact"][k] for item in items) for k in ("calories", "protein_g", "carbs_g", "fat_g")}
+            for item in items:
+                item.pop("_exact", None)
+            cal_val = int(round(totals["calories"]))
+            p_val = round(totals["protein_g"], 1)
+            c_val = round(totals["carbs_g"], 1)
+            f_val = round(totals["fat_g"], 1)
+            if cal_val > 0 or p_val > 0:
+                return {
+                    "parsed_successfully": True,
+                    "inferred_name": str(data.get("inferred_name") or cleaned[:35]).upper(),
+                    "source": "llm",
+                    "items": items,
+                    "calories": cal_val,
+                    "protein_g": p_val,
+                    "carbs_g": c_val,
+                    "fat_g": f_val,
+                    "macros": {
+                        "calories": cal_val,
+                        "protein_g": p_val,
+                        "carbs_g": c_val,
+                        "fat_g": f_val
                     }
-    except Exception as hf_err:
-        print(f"[parse_food_string] HF parsing fallback: {hf_err}")
+                }
+    except Exception as llm_err:
+        logger.warning(f"[parse_food_string] LLM response rejected, using fallback: {llm_err}")
 
     # 2. Local Open-Source Semantic Tokenizer & Deep Indian & Global Nutrient Solver
     normalized_input = cleaned.lower()
@@ -398,63 +735,44 @@ def parse_food_string(input_text: str) -> Dict[str, Any]:
         # Clean noise words
         item_name = re.sub(r'\b(of|fresh|cooked|raw|baked|grilled|steamed|seared|whole|slices?|pieces?|desi|boiled|fried|tadka|ghar ka)\b', '', item_name).strip()
 
-        # Match against food database prioritizing longest matching keys
-        matched_food = None
-        for key in sorted(FOOD_DATABASE.keys(), key=lambda k: len(k), reverse=True):
-            if key in item_name or item_name in key:
-                matched_food = (key, FOOD_DATABASE[key])
-                break
+        # Match against the food table (whole words first, then close spellings)
+        key = _match_food_key(item_name) if item_name else None
 
-        if matched_food:
-            key, val = matched_food
+        if key:
+            val = FOOD_DATABASE[key]
             found_items.append(val["name"])
-            multiplier = 1.0
-
-            if val["unit"] == 1:
-                # Per item/piece/roti/scoop/tbsp
-                multiplier = qty
-            elif val["unit"] == 200 or val["unit"] == 240:
-                # Liquid volume (glass, cup, or ml)
-                if unit_type == "ml":
-                    multiplier = qty / float(val["unit"])
-                elif unit_type == "grams":
-                    multiplier = qty / float(val["unit"])
-                else:
-                    multiplier = qty
-            elif val["unit"] == 28:
-                # 1 oz serving (nuts, cheese)
-                if unit_type == "grams":
-                    multiplier = qty / 28.0
-                else:
-                    multiplier = qty
-            else:
-                # 100g base serving
-                if unit_type == "grams":
-                    multiplier = qty / 100.0
-                elif unit_type == "items":
-                    multiplier = qty
-                else:
-                    multiplier = qty
-
-            total_cals += int(val["cals"] * multiplier)
-            total_protein += val["p"] * multiplier
-            total_carbs += val["c"] * multiplier
-            total_fat += val["f"] * multiplier
+            multiplier = _portion_multiplier(key, val["unit"], qty, unit_type)
+            per = {"cals": val["cals"], "p": val["p"], "c": val["c"], "f": val["f"]}
         else:
-            # Fallback estimation for unrecognized ingredient item
+            # Unrecognised item: generic home-cooked dish, scaled per 100g for weights
+            # (previously 150 kcal *per gram* when a weight was given).
             clean_item_name = item_name.strip().title()
-            if clean_item_name:
-                found_items.append(clean_item_name)
-                total_cals += int(150 * qty)
-                total_protein += 8.0 * qty
-                total_carbs += 18.0 * qty
-                total_fat += 4.0 * qty
+            if not clean_item_name:
+                continue
+            found_items.append(clean_item_name)
+            per = _GENERIC_PER_100G
+            if unit_type in ("grams", "ml"):
+                multiplier = qty / 100.0
+            elif unit_type == "tbsp":
+                multiplier = qty * _TBSP_GRAMS / 100.0
+            else:
+                multiplier = qty  # one ~100g serving per counted item
+
+        total_cals += int(round(per["cals"] * multiplier))
+        total_protein += per["p"] * multiplier
+        total_carbs += per["c"] * multiplier
+        total_fat += per["f"] * multiplier
 
     inferred_name = " + ".join(found_items[:3]) if found_items else cleaned[:35].title()
 
     return {
         "parsed_successfully": True,
         "inferred_name": inferred_name.upper(),
+        "source": "fallback",
+        "calories": max(50, total_cals),
+        "protein_g": round(max(2.0, total_protein), 1),
+        "carbs_g": round(max(0.0, total_carbs), 1),
+        "fat_g": round(max(0.0, total_fat), 1),
         "macros": {
             "calories": max(50, total_cals),
             "protein_g": round(max(2.0, total_protein), 1),
@@ -475,37 +793,33 @@ def generate_pantry_full_day_plan(
     meal_count: int = 3
 ) -> Dict[str, Any]:
     """
-    Generates a structured full-day nutrition protocol using open-source AI models & pantry inventory (Indian & Global standards).
+    Generates a structured full-day nutrition protocol using Groq-hosted LLM & pantry inventory (Indian & Global standards).
     """
     ing_text = ", ".join(ingredients) if ingredients else "Paneer, Eggs, Whole Wheat Rotis, Moong Dal, Oats, Spinach, Dahi"
 
-    # 1. Try Hugging Face Open-Source Planner
-    hf_system = (
-        "You are an elite sports nutritionist proficient in Global and Indian athletic diets. "
-        "Output strict JSON with format: "
-        '{"plan_summary": "string", "meals": [{"meal_slot": "BREAKFAST / LUNCH / DINNER", "name": "NAME", "calories": int, "protein_g": float, "carbs_g": float, "fat_g": float, "used_ingredients": ["list"], "instructions": "string"}]}'
-    )
+    # 1. Try Groq LLM Planner
     user_prompt = (
-        f"Create a {meal_count}-meal full-day protocol fitting target {target_calories} kcal, {target_protein}g protein, {target_carbs}g carbs, {target_fat}g fat. "
-        f"Goal: {fitness_goals} ({body_type}). Available kitchen/pantry items: {ing_text}."
+        f"Pantry available: {ing_text}\n"
+        f"Daily targets: {target_calories} kcal, {target_protein}g protein, {target_carbs}g carbs, {target_fat}g fat.\n"
+        f"Goal: {fitness_goals} ({body_type}).\n"
+        f"Create a {meal_count}-meal full-day plan."
     )
     try:
-        hf_response = _call_huggingface_llm(hf_system, user_prompt, timeout_seconds=3.0)
-        if hf_response:
-            data = _extract_and_parse_json(hf_response)
-            if data and "meals" in data and len(data["meals"]) > 0:
-                return {
-                    "plan_summary": data.get("plan_summary", f"AI Generated {meal_count}-Meal Protocol for {fitness_goals}"),
-                    "target_totals": {
-                        "calories": target_calories,
-                        "protein_g": target_protein,
-                        "carbs_g": target_carbs,
-                        "fat_g": target_fat
-                    },
-                    "meals": data["meals"]
-                }
+        data = _call_groq_llm(PANTRY_PLANNER_SYSTEM_PROMPT, user_prompt)
+        if data and isinstance(data.get("meals"), list) and len(data["meals"]) > 0:
+            return {
+                "plan_summary": data.get("plan_summary", f"AI Generated {meal_count}-Meal Protocol for {fitness_goals}"),
+                "source": "llm",
+                "target_totals": {
+                    "calories": target_calories,
+                    "protein_g": target_protein,
+                    "carbs_g": target_carbs,
+                    "fat_g": target_fat
+                },
+                "meals": data["meals"]
+            }
     except Exception as plan_err:
-        print(f"[generate_pantry_full_day_plan] HF fallback: {plan_err}")
+        logger.warning(f"[generate_pantry_full_day_plan] LLM response rejected, using fallback: {plan_err}")
 
     # 2. Local Heuristic Engine with Indian & Global Athletic Defaults
     meal_slots = ["BREAKFAST // ANABOLIC MORNING PRIMER", "LUNCH // MIDDAY NITROGEN CORE", "DINNER // SUSTAINED NIGHT RECOVERY"]
@@ -563,6 +877,7 @@ def generate_pantry_full_day_plan(
 
     return {
         "plan_summary": f"Calculated {len(recipes)}-meal protocol for {fitness_goals} ({body_type}) utilizing available pantry inventory.",
+        "source": "fallback",
         "target_totals": {
             "calories": target_calories,
             "protein_g": target_protein,
@@ -579,10 +894,12 @@ def generate_strategist_meal_suggestion(
     protein_g: float,
     carbs_g: float,
     fat_g: float,
-    fitness_goals: str = "Hypertrophy"
+    fitness_goals: str = "Hypertrophy",
+    pantry_items: Optional[List[str]] = None
 ) -> Dict[str, Any]:
     """
-    Synthesizes custom meal protocol targeted to exact remaining macro targets and optional user prompt (Indian & Global standards).
+    Synthesizes custom meal protocol targeted to exact remaining macro targets, optional user prompt
+    and optional pantry inventory (Indian & Global standards).
     """
     calories = max(100, int(calories))
     protein = round(max(10.0, float(protein_g)), 1)
@@ -590,57 +907,54 @@ def generate_strategist_meal_suggestion(
     fat = round(max(3.0, float(fat_g)), 1)
     user_query = (prompt or "").strip()
 
-    # 1. Try Hugging Face Open-Source LLM
-    hf_system = (
-        "You are an elite sports nutrition strategist and culinary chef proficient in Indian and International cuisines. "
-        "Create a single meal recipe tailored precisely to the user's macro targets and preferences. "
-        "Output strict JSON with format: "
-        '{"name": "MEAL NAME", "calories": int, "protein": float, "carbs": float, "fat": float, "instructions": "Step 1: ... Step 2: ..."}. '
-        "Do not include code markdown or any conversational filler, only raw JSON."
-    )
+    # 1. Try Groq LLM (temperature 0.7 for variety between suggestions)
+    pantry_line = f"Pantry available: {', '.join(pantry_items)}\n" if pantry_items else ""
     user_prompt = (
-        f"Goal: {fitness_goals}. "
-        f"Target Macros: {calories} kcal, {protein}g protein, {carbs}g carbs, {fat}g fat. "
-        f"User Meal Request: '{user_query if user_query else 'High protein nutrient dense Indian or Global meal'}'."
+        f"{pantry_line}"
+        f"Remaining macros for today: {calories} kcal, {protein}g protein, {carbs}g carbs, {fat}g fat.\n"
+        f"Goal: {fitness_goals}.\n"
+        f"Meal request: '{user_query if user_query else 'High protein nutrient dense Indian or Global meal'}'.\n"
+        f"Suggest one meal."
     )
 
     try:
-        hf_response = _call_huggingface_llm(hf_system, user_prompt, timeout_seconds=3.0)
-        if hf_response:
-            data = _extract_and_parse_json(hf_response)
-            if data and "name" in data and "instructions" in data:
-                name_val = str(data.get("name", "Custom Anabolic Bowl")).upper()
-                inst_val = str(data.get("instructions", "Cook protein with complex carbs and healthy fats."))
-                cal_val = int(data.get("calories", calories))
-                p_val = round(float(data.get("protein", protein)), 1)
-                c_val = round(float(data.get("carbs", carbs)), 1)
-                f_val = round(float(data.get("fat", fat)), 1)
-                return {
-                    "name": name_val,
-                    "calories": cal_val,
-                    "protein": p_val,
-                    "protein_g": p_val,
-                    "carbs": c_val,
-                    "carbs_g": c_val,
-                    "fat": f_val,
-                    "fat_g": f_val,
-                    "instructions": inst_val
-                }
+        data = _call_groq_llm(MEAL_SUGGESTION_SYSTEM_PROMPT, user_prompt, temperature=0.7)
+        if data and "meal_name" in data and "instructions" in data:
+            llm_macros = data.get("macros") or {}
+            cal_val = int(llm_macros.get("calories", calories))
+            p_val = round(float(llm_macros.get("protein_g", protein)), 1)
+            c_val = round(float(llm_macros.get("carbs_g", carbs)), 1)
+            f_val = round(float(llm_macros.get("fat_g", fat)), 1)
+            ingredients = [_display_ingredient(i) for i in (data.get("ingredients") or []) if isinstance(i, dict)]
+            return {
+                "name": str(data["meal_name"]).upper(),
+                "source": "llm",
+                "calories": cal_val,
+                "protein": p_val,
+                "protein_g": p_val,
+                "carbs": c_val,
+                "carbs_g": c_val,
+                "fat": f_val,
+                "fat_g": f_val,
+                "ingredients": ingredients,
+                "instructions": str(data["instructions"])
+            }
     except Exception as strat_err:
-        print(f"[generate_strategist_meal_suggestion] HF fallback: {strat_err}")
+        logger.warning(f"[generate_strategist_meal_suggestion] LLM response rejected, using fallback: {strat_err}")
 
     # 2. Dynamic Semantic Fallback Engine based on prompt keywords and macros (Indian & Global)
     q = user_query.lower()
     
     # Calculate realistic ingredient quantities based on macro targets
-    chicken_g = int((protein / 0.31))
-    paneer_g = int((protein / 0.18))
-    soya_g = int((protein / 0.52))
-    salmon_g = int((protein / 0.20))
+    # Solids rounded to the nearest 5g, countables to the nearest 0.5 (same rules as the LLM prompt)
+    chicken_g = _round_to_step(protein / 0.31, 5)
+    paneer_g = _round_to_step(protein / 0.18, 5)
+    soya_g = _round_to_step(protein / 0.52, 5)
+    salmon_g = _round_to_step(protein / 0.20, 5)
     egg_whites_count = max(3, int(protein / 3.6))
     roti_count = max(1, int(carbs / 20.0))
-    rice_g = max(50, int(carbs / 0.28))
-    ghee_tbsp = max(1, round(fat / 12.7, 1))
+    rice_g = max(50, _round_to_step(carbs / 0.28, 5))
+    ghee_tbsp = max(1, _round_to_step(fat / 12.7, 0.5))
 
     if "paneer" in q or "vegetarian" in q or "veg" in q:
         name = "Tandoori Paneer Tikka & Whole Wheat Phulkas"
@@ -688,5 +1002,7 @@ def generate_strategist_meal_suggestion(
         "carbs_g": carbs,
         "fat": fat,
         "fat_g": fat,
+        "source": "fallback",
+        "ingredients": [],
         "instructions": instructions
     }

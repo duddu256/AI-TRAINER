@@ -1,9 +1,12 @@
+import os
+import uuid
 from fastapi import FastAPI, HTTPException, Depends, status, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from app.services.supabase_client import supabase_auth, supabase_db
 from app.services.ai_service import (
+    diagnose_ai_providers,
     parse_food_string,
     generate_pantry_full_day_plan,
     generate_strategist_meal_suggestion
@@ -31,7 +34,7 @@ app = FastAPI(
     description="Advanced AI-Automated Athletic Training Engine with Vector Overload Memory and Gamification"
 )
 
-# Allowed origins for CORS (Local development & Vercel deployments)
+# Allowed origins for CORS (Local development, Vercel deployments, and production domains)
 origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
@@ -41,7 +44,12 @@ origins = [
     "http://127.0.0.1:8080",
     "http://localhost:5174",
     "http://127.0.0.1:5174",
+    "https://ai-trainer-x9s1.vercel.app",
 ]
+
+env_origins = os.getenv("ALLOWED_ORIGINS", "")
+if env_origins:
+    origins.extend([o.strip() for o in env_origins.split(",") if o.strip()])
 
 app.add_middleware(
     CORSMiddleware,
@@ -54,6 +62,32 @@ app.add_middleware(
 
 security = HTTPBearer()
 
+def handle_db_or_auth_error(e: Exception, default_status: int = status.HTTP_400_BAD_REQUEST) -> HTTPException:
+    err_str = str(e)
+    err_type = type(e).__name__
+    
+    # Detect DNS or Network unreachable / ConnectError (e.g. Supabase paused project)
+    if "11001" in err_str or "getaddrinfo" in err_str or "ConnectError" in err_type or "Name or service not known" in err_str:
+        return HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "DATABASE CONNECTION ERROR: Unable to reach Supabase project. "
+                "Your Supabase project is likely PAUSED due to inactivity. "
+                "Please visit https://supabase.com/dashboard, open your project, and click 'Restore Project', "
+                "or update the SUPABASE_URL and API keys in your .env file."
+            )
+        )
+    
+    # Friendly auth messages
+    if "Password should be at least" in err_str:
+        return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Password must be at least 6 characters long.")
+    if "User already registered" in err_str:
+        return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="An account with this email is already registered. Please log in instead.")
+    if "Invalid login credentials" in err_str:
+        return HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid email or password.")
+        
+    return HTTPException(status_code=default_status, detail=err_str)
+
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)):
     token = credentials.credentials
     try:
@@ -62,6 +96,8 @@ async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(s
             raise ValueError("Invalid user session")
         return response.user
     except Exception as e:
+        if "11001" in str(e) or "getaddrinfo" in str(e) or "ConnectError" in type(e).__name__:
+            raise handle_db_or_auth_error(e)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Authentication failed: {str(e)}"
@@ -115,6 +151,32 @@ class MealSuggestionRequest(BaseModel):
     fat_g: float
     fitness_goals: str = "Hypertrophy"
     prompt: Optional[str] = None
+    pantry_items: Optional[List[str]] = None
+
+class ProfileUpdate(BaseModel):
+    name: Optional[str] = None
+    age: Optional[int] = Field(default=None, gt=0, lt=120)
+    height_cm: Optional[float] = Field(default=None, gt=0, lt=300)
+    weight_kg: Optional[float] = Field(default=None, gt=0, lt=500)
+    body_type: Optional[str] = None
+    fitness_goals: Optional[str] = None
+    target_calories: Optional[int] = Field(default=None, gt=0, lt=10000)
+    target_protein_g: Optional[float] = Field(default=None, ge=0, lt=1000)
+    target_carbs_g: Optional[float] = Field(default=None, ge=0, lt=2000)
+    target_fat_g: Optional[float] = Field(default=None, ge=0, lt=1000)
+    target_water_ml: Optional[int] = Field(default=None, ge=0, lt=20000)
+    target_steps: Optional[int] = Field(default=None, ge=0, lt=200000)
+
+class MealUpdate(BaseModel):
+    name: Optional[str] = None
+    calories: Optional[int] = Field(default=None, ge=0)
+    protein_g: Optional[float] = Field(default=None, ge=0)
+    carbs_g: Optional[float] = Field(default=None, ge=0)
+    fat_g: Optional[float] = Field(default=None, ge=0)
+
+class WeightLogEntry(BaseModel):
+    weight_kg: float = Field(gt=0, lt=500)
+    log_date: Optional[date_type] = None
 
 class ParseFoodRequest(BaseModel):
     input_text: str
@@ -156,6 +218,14 @@ async def health_check():
 
 # --- CORE USER ROUTES ---
 
+@app.get("/api/health/ai")
+def ai_health_check():
+    """
+    Live check that Groq and USDA FoodData Central are reachable with the configured keys.
+    Open this in a browser after deploying; `ok: false` comes with the provider's error.
+    """
+    return diagnose_ai_providers()
+
 @app.post("/api/auth/register", status_code=status.HTTP_201_CREATED)
 async def register_user(user: UserAuth):
     try:
@@ -163,7 +233,7 @@ async def register_user(user: UserAuth):
         user_id = response.user.id if response.user else None
         return {"message": "User registered successfully!", "user_id": user_id}
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise handle_db_or_auth_error(e, status.HTTP_400_BAD_REQUEST)
 
 @app.post("/api/auth/login")
 async def login_user(user: UserAuth):
@@ -176,7 +246,7 @@ async def login_user(user: UserAuth):
             "user": {"id": response.user.id, "email": response.user.email}
         }
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
+        raise handle_db_or_auth_error(e, status.HTTP_401_UNAUTHORIZED)
 
 class TokenRefreshRequest(BaseModel):
     refresh_token: str
@@ -215,7 +285,25 @@ async def save_user_profile(profile_data: ProfileOnboarding, current_user = Depe
         }).execute()
         return {"status": "Profile saved!", "data": next(iter(response.data), {})}
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise handle_db_or_auth_error(e, status.HTTP_400_BAD_REQUEST)
+
+@app.patch("/api/profile")
+async def update_user_profile(updates: ProfileUpdate, current_user = Depends(get_current_user)):
+    """
+    Partial profile update: only the fields sent are changed (edit mode on the Profile page).
+    """
+    payload = {k: v for k, v in updates.model_dump(exclude_unset=True).items() if v is not None}
+    if "name" in payload:
+        payload["name"] = payload["name"].strip().upper()
+        if not payload["name"]:
+            raise HTTPException(status_code=400, detail="Name cannot be empty.")
+    if not payload:
+        raise HTTPException(status_code=400, detail="No profile fields provided to update.")
+    try:
+        response = supabase_db.table("profiles").update(payload).eq("id", current_user.id).execute()
+        return {"status": "Profile updated!", "data": next(iter(response.data), {})}
+    except Exception as e:
+        raise handle_db_or_auth_error(e, status.HTTP_400_BAD_REQUEST)
 
 @app.get("/api/profile")
 async def get_user_profile(current_user = Depends(get_current_user)):
@@ -223,7 +311,7 @@ async def get_user_profile(current_user = Depends(get_current_user)):
         response = supabase_db.table("profiles").select("*").eq("id", current_user.id).execute()
         return next(iter(response.data), {})
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise handle_db_or_auth_error(e, status.HTTP_400_BAD_REQUEST)
 
 # --- WORKOUT ENGINE & VECTOR MEMORY ENDPOINTS ---
 
@@ -360,7 +448,7 @@ async def delete_saved_meal_endpoint(
 # --- AI NATURAL LANGUAGE FOOD PARSER & PANTRY (MODULE 1 & 4) ---
 
 @app.post("/api/ai/parse-food")
-async def parse_food_endpoint(payload: ParseFoodRequest):
+def parse_food_endpoint(payload: ParseFoodRequest):
     """
     Module 1: Parses natural language food text string into structured macro breakdown.
     """
@@ -368,7 +456,7 @@ async def parse_food_endpoint(payload: ParseFoodRequest):
     return result
 
 @app.post("/api/ai/pantry-planner")
-async def pantry_planner_endpoint(payload: PantryPlannerRequest):
+def pantry_planner_endpoint(payload: PantryPlannerRequest):
     """
     Module 4: Full-day nutrition protocol planner based on kitchen inventory and remaining macros.
     """
@@ -420,7 +508,7 @@ async def get_daily_log(date: date_type, current_user = Depends(get_current_user
         insert_res = supabase_db.table("daily_logs").insert(new_log).execute()
         return next(iter(insert_res.data), new_log)
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise handle_db_or_auth_error(e, status.HTTP_400_BAD_REQUEST)
 
 @app.post("/api/logs/trackers")
 async def update_trackers(tracker_data: TrackerUpdate, current_user = Depends(get_current_user)):
@@ -467,7 +555,7 @@ async def update_trackers(tracker_data: TrackerUpdate, current_user = Depends(ge
             "newly_unlocked_badges": newly_unlocked
         }
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise handle_db_or_auth_error(e, status.HTTP_400_BAD_REQUEST)
 
 @app.post("/api/logs/meals")
 async def log_meal(meal_data: MealLog, current_user = Depends(get_current_user)):
@@ -477,7 +565,7 @@ async def log_meal(meal_data: MealLog, current_user = Depends(get_current_user))
         if not res.data:
             current_meals = []
             new_meal = meal_data.model_dump()
-            new_meal["id"] = f"m_{len(current_meals) + 1}"
+            new_meal["id"] = f"m_{uuid.uuid4().hex[:12]}"
             new_meal["date"] = str(new_meal["date"])
             current_meals.append(new_meal)
             
@@ -502,7 +590,7 @@ async def log_meal(meal_data: MealLog, current_user = Depends(get_current_user))
             current_meals = first_row.get("meals", []) or []
             
             new_meal = meal_data.model_dump()
-            new_meal["id"] = f"m_{len(current_meals) + 1}"
+            new_meal["id"] = f"m_{uuid.uuid4().hex[:12]}"
             new_meal["date"] = str(new_meal["date"])
             current_meals.append(new_meal)
             
@@ -518,12 +606,115 @@ async def log_meal(meal_data: MealLog, current_user = Depends(get_current_user))
             "newly_unlocked_badges": newly_unlocked
         }
     except Exception as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise handle_db_or_auth_error(e, status.HTTP_400_BAD_REQUEST)
+
+def _find_logged_meal(user_id: str, date_str: str, meal_id: str, index: Optional[int]):
+    """
+    Returns (meals, position) for a meal in a day's log. `index` pins the exact row, since meals
+    logged before ids became unique can share an id; it must still match `meal_id`.
+    """
+    res = supabase_db.table("daily_logs").select("meals").eq("user_id", user_id).eq("date", date_str).execute()
+    current_meals = (next(iter(res.data), {}) or {}).get("meals", []) or []
+
+    if index is not None and 0 <= index < len(current_meals) and current_meals[index].get("id") == meal_id:
+        return current_meals, index
+    target_idx = next((i for i, m in enumerate(current_meals) if m.get("id") == meal_id), None)
+    if target_idx is None:
+        raise HTTPException(status_code=404, detail="Meal not found in this day's log.")
+    return current_meals, target_idx
+
+@app.patch("/api/logs/meals/{meal_id}")
+async def update_logged_meal(
+    meal_id: str,
+    updates: MealUpdate,
+    date: date_type,
+    index: Optional[int] = None,
+    current_user = Depends(get_current_user)
+):
+    """
+    Edits one logged meal's name or macros in place.
+    """
+    date_str = str(date)
+    changes = {k: v for k, v in updates.model_dump(exclude_unset=True).items() if v is not None}
+    if "name" in changes:
+        changes["name"] = changes["name"].strip().upper()
+        if not changes["name"]:
+            raise HTTPException(status_code=400, detail="Meal name cannot be empty.")
+    if not changes:
+        raise HTTPException(status_code=400, detail="No meal fields provided to update.")
+    try:
+        current_meals, target_idx = _find_logged_meal(current_user.id, date_str, meal_id, index)
+        current_meals[target_idx] = {**current_meals[target_idx], **changes}
+        update_res = supabase_db.table("daily_logs").update({"meals": current_meals}).eq("user_id", current_user.id).eq("date", date_str).execute()
+        return {"status": "Meal updated!", "data": next(iter(update_res.data), {})}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise handle_db_or_auth_error(e, status.HTTP_400_BAD_REQUEST)
+
+@app.delete("/api/logs/meals/{meal_id}")
+async def delete_logged_meal(
+    meal_id: str,
+    date: date_type,
+    index: Optional[int] = None,
+    current_user = Depends(get_current_user)
+):
+    """
+    Removes one logged meal from a day's log.
+    """
+    date_str = str(date)
+    try:
+        current_meals, target_idx = _find_logged_meal(current_user.id, date_str, meal_id, index)
+
+        current_meals.pop(target_idx)
+        update_res = supabase_db.table("daily_logs").update({"meals": current_meals}).eq("user_id", current_user.id).eq("date", date_str).execute()
+        return {"status": "Meal removed!", "data": next(iter(update_res.data), {})}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise handle_db_or_auth_error(e, status.HTTP_400_BAD_REQUEST)
+
+@app.post("/api/weight-logs")
+async def log_weight(entry: WeightLogEntry, current_user = Depends(get_current_user)):
+    """
+    Upserts today's (or the given day's) body weight. Re-entering on the same day overwrites
+    the earlier value via the UNIQUE (user_id, log_date) constraint.
+    """
+    log_date = str(entry.log_date or date_type.today())
+    try:
+        res = supabase_db.table("weight_logs").upsert(
+            {"user_id": current_user.id, "log_date": log_date, "weight_kg": round(entry.weight_kg, 2)},
+            on_conflict="user_id,log_date"
+        ).execute()
+        # Today's entry is the athlete's current weight, so keep the profile in step with it.
+        if log_date == str(date_type.today()):
+            supabase_db.table("profiles").update({"weight_kg": round(entry.weight_kg, 2)}).eq("id", current_user.id).execute()
+        return {"status": "Weight logged!", "data": next(iter(res.data), {})}
+    except Exception as e:
+        raise handle_db_or_auth_error(e, status.HTTP_400_BAD_REQUEST)
+
+@app.get("/api/weight-logs")
+async def get_weight_history(limit: int = 90, current_user = Depends(get_current_user)):
+    """
+    Returns the user's most recent weight entries, newest first.
+    """
+    try:
+        res = (
+            supabase_db.table("weight_logs")
+            .select("log_date, weight_kg")
+            .eq("user_id", current_user.id)
+            .order("log_date", desc=True)
+            .limit(max(1, min(limit, 365)))
+            .execute()
+        )
+        return res.data or []
+    except Exception as e:
+        raise handle_db_or_auth_error(e, status.HTTP_400_BAD_REQUEST)
 
 # --- AI RECIPES ENGINE ---
 
 @app.post("/api/ai/meal-suggestion")
-async def suggest_meal(request: MealSuggestionRequest):
+def suggest_meal(request: MealSuggestionRequest):
     """
     Processes user remaining targets and custom prompt to synthesize a high-precision anabolic recipe.
     """
@@ -534,7 +725,8 @@ async def suggest_meal(request: MealSuggestionRequest):
             protein_g=request.protein_g,
             carbs_g=request.carbs_g,
             fat_g=request.fat_g,
-            fitness_goals=request.fitness_goals
+            fitness_goals=request.fitness_goals,
+            pantry_items=request.pantry_items
         )
         return recipe
     except Exception as e:

@@ -3,7 +3,7 @@ let sanitizedUrl = rawApiUrl.trim().replace(/\/+$/, "");
 if (sanitizedUrl.endsWith("/api")) {
   sanitizedUrl = sanitizedUrl.slice(0, -4);
 }
-const API_BASE_URL = sanitizedUrl;
+export const API_BASE_URL = sanitizedUrl;
 
 // Helper to retrieve auth headers
 const getAuthHeaders = () => {
@@ -114,6 +114,18 @@ export const api = {
     return res.json();
   },
 
+  updateProfile: async (updates) => {
+    const res = await authFetch(`${API_BASE_URL}/api/profile`, {
+      method: "PATCH",
+      body: JSON.stringify(updates),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "Failed to update profile");
+    }
+    return res.json();
+  },
+
   getProfile: async () => {
     const res = await authFetch(`${API_BASE_URL}/api/profile`, {
       method: "GET",
@@ -157,6 +169,56 @@ export const api = {
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error(err.detail || "Failed to log meal");
+    }
+    return res.json();
+  },
+
+  updateLoggedMeal: async (mealId, date, index, updates) => {
+    const params = new URLSearchParams({ date });
+    if (index !== undefined && index !== null) params.set("index", String(index));
+    const res = await authFetch(
+      `${API_BASE_URL}/api/logs/meals/${encodeURIComponent(mealId)}?${params.toString()}`,
+      { method: "PATCH", body: JSON.stringify(updates) }
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "Failed to update logged meal");
+    }
+    return res.json();
+  },
+
+  // Weight tracking (one entry per day; same-day re-entry overwrites)
+  logWeight: async (weightKg, logDate) => {
+    const res = await authFetch(`${API_BASE_URL}/api/weight-logs`, {
+      method: "POST",
+      body: JSON.stringify({ weight_kg: weightKg, ...(logDate ? { log_date: logDate } : {}) }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "Failed to log weight");
+    }
+    return res.json();
+  },
+
+  getWeightLogs: async (limit = 90) => {
+    const res = await authFetch(`${API_BASE_URL}/api/weight-logs?limit=${limit}`, { method: "GET" });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "Failed to fetch weight history");
+    }
+    return res.json();
+  },
+
+  deleteLoggedMeal: async (mealId, date, index) => {
+    const params = new URLSearchParams({ date });
+    if (index !== undefined && index !== null) params.set("index", String(index));
+    const res = await authFetch(
+      `${API_BASE_URL}/api/logs/meals/${encodeURIComponent(mealId)}?${params.toString()}`,
+      { method: "DELETE" }
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "Failed to delete logged meal");
     }
     return res.json();
   },

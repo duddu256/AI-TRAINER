@@ -1,10 +1,12 @@
 import React, { useState } from "react";
+import { Eye, EyeOff } from "lucide-react";
 import { api } from "../services/api";
 
 export default function LoginRegister({ onAuthSuccess }) {
   const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [stayLoggedIn, setStayLoggedIn] = useState(true);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -85,8 +87,22 @@ export default function LoginRegister({ onAuthSuccess }) {
 
         {/* Alerts */}
         {error && (
-          <div className="mb-6 p-4 bg-red-950/30 border-l-4 border-red-500 text-red-300 text-xs font-bold tracking-wide rounded-r-xl uppercase">
-            {error}
+          <div className="mb-6 p-4 bg-red-950/40 border border-red-500/50 rounded-2xl text-red-200 text-xs font-semibold leading-relaxed shadow-[0_0_20px_rgba(239,68,68,0.15)]">
+            <div className="flex items-center gap-2 text-red-400 font-black tracking-wider uppercase mb-1.5">
+              <span className="w-2 h-2 rounded-full bg-red-500 animate-ping"></span>
+              {error.includes("DATABASE") ? "DATABASE STATUS NOTICE" : "AUTHENTICATION NOTICE"}
+            </div>
+            <p className="text-slate-300 font-mono text-[11px] mb-2">{error}</p>
+            {error.includes("supabase.com") && (
+              <a
+                href="https://supabase.com/dashboard"
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-500/20 hover:bg-red-500/30 border border-red-500/40 text-red-300 font-bold text-[10px] tracking-wider uppercase transition cursor-pointer mt-1"
+              >
+                OPEN SUPABASE DASHBOARD →
+              </a>
+            )}
           </div>
         )}
 
@@ -116,14 +132,25 @@ export default function LoginRegister({ onAuthSuccess }) {
             <label className="block text-slate-400 text-[10px] font-black tracking-[0.2em] uppercase mb-2">
               SECRET PASSCODE
             </label>
-            <input
-              type="password"
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-5 py-4 bg-black border border-slate-900 rounded-2xl text-slate-100 placeholder-slate-700 font-medium focus:outline-none focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400 transition-all text-sm"
-              placeholder="••••••••••••"
-            />
+            <div className="relative">
+              <input
+                type={showPassword ? "text" : "password"}
+                required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full pl-5 pr-14 py-4 bg-black border border-slate-900 rounded-2xl text-slate-100 placeholder-slate-700 font-medium focus:outline-none focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400 transition-all text-sm"
+                placeholder="••••••••••••"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword((prev) => !prev)}
+                aria-label={showPassword ? "Hide password" : "Show password"}
+                aria-pressed={showPassword}
+                className="absolute inset-y-0 right-0 flex items-center px-4 text-slate-500 hover:text-cyan-400 transition-colors cursor-pointer"
+              >
+                {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+              </button>
+            </div>
           </div>
 
           {/* Stay Logged In Toggle */}

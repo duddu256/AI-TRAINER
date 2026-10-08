@@ -2,9 +2,15 @@ import React, { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { api } from "../services/api";
 
-export default function CustomSplitEditor({ isOpen, onClose, customSplits, onSaveSplits, onSelectSplit }) {
+// Hooks live in the body component so the open/closed early return never changes
+// the hook order (it previously crashed with "Rendered more hooks" on open), and
+// each open starts from the latest customSplits.
+export default function CustomSplitEditor({ isOpen, ...props }) {
   if (!isOpen) return null;
+  return <CustomSplitEditorBody {...props} />;
+}
 
+function CustomSplitEditorBody({ onClose, customSplits, onSaveSplits, onSelectSplit }) {
   const [splits, setSplits] = useState(customSplits || {});
   const [activeSplitKey, setActiveSplitKey] = useState(
     Object.keys(splits)[0] || "CUSTOM PUSH (HEAVY)"
@@ -88,7 +94,7 @@ export default function CustomSplitEditor({ isOpen, onClose, customSplits, onSav
           animate={{ opacity: 1, scale: 1, y: 0, rotateX: 0 }}
           exit={{ opacity: 0, scale: 0.92, y: 20 }}
           transition={{ type: "spring", stiffness: 350, damping: 25 }}
-          className="w-full max-w-3xl bg-[#0a0a0c]/95 border border-white/10 rounded-3xl p-6 sm:p-8 relative shadow-[0_0_80px_rgba(0,82,255,0.25)] max-h-[90vh] flex flex-col overflow-hidden backdrop-blur-2xl"
+          className="w-full max-w-3xl bg-[#0a0a0c]/95 border border-white/10 rounded-3xl p-4 sm:p-8 relative shadow-[0_0_80px_rgba(0,82,255,0.25)] max-h-[90dvh] flex flex-col overflow-hidden backdrop-blur-2xl"
           style={{ transformStyle: "preserve-3d" }}
         >
           {/* Top Accent Stripe */}

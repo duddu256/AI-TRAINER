@@ -30,3 +30,51 @@ body {
 .font-stats {
   font-family: var(--font-silkscreen);
 }
+
+/* --- Depth system ---------------------------------------------------------
+   Layered shadows give every card a resting elevation; on hover-capable
+   pointers, .depth-card adds a subtle perspective tilt + lift. Touch devices
+   keep the static elevation only (no transforms on tap). */
+.depth-elevated {
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.04) inset,
+    0 1px 2px rgba(0, 0, 0, 0.6),
+    0 8px 16px -4px rgba(0, 0, 0, 0.55),
+    0 24px 48px -12px rgba(0, 0, 0, 0.7);
+}
+
+.depth-card {
+  transform: perspective(1200px) rotateX(0deg) rotateY(0deg) translateY(0);
+  transition:
+    transform 260ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    box-shadow 260ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    border-color 200ms ease;
+  will-change: transform;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .depth-card:hover {
+    transform: perspective(1200px) rotateX(1.6deg) rotateY(-1.4deg) translateY(-3px);
+    box-shadow:
+      0 1px 0 rgba(255, 255, 255, 0.06) inset,
+      0 2px 4px rgba(0, 0, 0, 0.6),
+      0 16px 32px -8px rgba(0, 0, 0, 0.6),
+      0 36px 64px -16px rgba(0, 82, 255, 0.22);
+  }
+  .depth-card.depth-tilt-right:hover {
+    transform: perspective(1200px) rotateX(1.6deg) rotateY(1.4deg) translateY(-3px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .depth-card,
+  .depth-card:hover {
+    transform: none;
+    transition: none;
+  }
+}
+
+/* Bottom dock clearance: content never hides behind the fixed nav + home indicator. */
+.pb-dock {
+  padding-bottom: calc(7rem + env(safe-area-inset-bottom, 0px));
+}
