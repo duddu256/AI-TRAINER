@@ -702,6 +702,31 @@ export default function DietSection() {
                     <span>FAT: <span className="text-indigo-400 font-black font-stats">{nlParsedResult.macros.fat_g}G</span></span>
                   </div>
 
+                  {nlParsedResult.items && nlParsedResult.items.length > 0 && (
+                    <ul className="divide-y divide-white/5 border-t border-slate-900 pt-1">
+                      {nlParsedResult.items.map((item, iIdx) => (
+                        <li key={iIdx} className="py-1.5 flex items-center justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="text-[11px] font-black text-slate-200 uppercase truncate">{item.display || item.name}</div>
+                            <div
+                              className="text-[8px] font-black tracking-[0.18em] uppercase text-slate-500 truncate"
+                              title={item.matched_food || undefined}
+                            >
+                              {item.macro_source === "usda"
+                                ? `USDA: ${item.matched_food || "MATCH"}`
+                                : item.macro_source === "local_db"
+                                  ? "AURA FOOD TABLE"
+                                  : "AI ESTIMATE"}
+                            </div>
+                          </div>
+                          <div className="text-[10px] font-bold text-slate-400 font-stats whitespace-nowrap">
+                            {item.calories} KCAL • {item.protein_g}P
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+
                   <div className="flex gap-3 pt-2 border-t border-slate-900">
                     <button
                       onClick={handleCommitParsedMealToDaily}

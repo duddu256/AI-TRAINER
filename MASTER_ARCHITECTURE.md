@@ -51,6 +51,7 @@ ai-trainer/
 │       ├── gamification_service.py       # Streaks evaluator & achievement badge unlocker
 │       ├── saved_meals_service.py        # CRUD templates for frequently consumed meals
 │       ├── supabase_client.py            # Supabase Auth & DB connection with safe fallback
+│       ├── usda_service.py               # USDA FoodData Central per-100g lookup (cached)
 │       └── vector_memory_service.py      # Workout memory & progressive overload computation
 │
 └── ai-trainer-web/                       # REACT 19 FRONTEND SERVICE
@@ -99,7 +100,17 @@ ai-trainer/
 - **Role**: Natural language meal parsing, recipe strategist, and pantry planning.
 - **Why this specific approach**: **Hybrid Architecture**. `ai_service.py` calls Groq (`GROQ_MODEL`, default `llama-3.1-8b-instant`) in JSON mode with an 8-second timeout and no SDK retries. The client is created lazily, so a missing `GROQ_API_KEY` degrades to the fallback instead of crashing startup. On any error, timeout or unparseable output it falls back to an extensive built-in database of Indian and international foods (gram-level macro weights for rotis, paneer, soya chunks, chicken breast, biryani, chana, etc.). Every response includes `"source": "llm"` or `"source": "fallback"` so the fallback rate is visible.
 - **Rounding (two layers)**: (1) Prompt layer: every system prompt carries the same rules (solids to the nearest 5g, liquids to the nearest 25ml, countable items to the nearest 0.5, max one decimal) and asks for kitchen-practical phrasing ("1 medium roti", "1/2 cup dal"). (2) Code layer: `_display_ingredient()` rounds each suggested ingredient quantity by unit before it reaches the frontend, keeping `quantity_exact` alongside and a ready-made `display` string ("35g paneer"). Macro totals are never computed from rounded quantities. The local fallback rounds its quantities with the same rules.
+- **Food parsing pipeline (`parse_food_string`)**: Groq only *extracts* items (name, quantity, unit, estimated grams, a USDA search term, and its own macro estimate). Each item's macros then come from the first source that matches:
+  1. `local_db`: the hand-curated Indian & Global table (best for rotis, dals and paneer dishes), matched on whole words.
+  2. `usda`: USDA FoodData Central (Foundation + SR Legacy, per 100g) scaled by the gram estimate. A match must share a meaningful word with the query, otherwise it is rejected. Lookups run in parallel and are cached per process.
+  3. `llm_estimate`: the model's own estimate, used only when neither source matches.
+
+  The response keeps the old totals (`macros`, `calories`, ...) and adds `items[]` with per-item `display`, `grams`, `macro_source` and `matched_food`. If Groq itself fails, the whole parse falls back to the fully local tokenizer (`source: "fallback"`).
 - **Temperature**: 0.2 for food parsing (deterministic extraction), 0.7 for meal suggestions and pantry plans (variety between suggestions).
+
+#### `app/services/usda_service.py`
+- **Role**: `lookup_per_100g(query)` returns macros per 100g from USDA FoodData Central (`/fdc/v1/foods/search`), or `None`.
+- **Why this specific approach**: Lab-analysed generic foods give grounded numbers for anything outside the local table. Energy is read from nutrient 208, or from Atwater energy (958/957) on Foundation foods. Calls time out after 4s. Network and quota failures return `None` without being cached, so the next request retries. Uses `USDA_API_KEY`, falling back to the rate-limited `DEMO_KEY`.
 
 #### `app/services/vector_memory_service.py`
 - **Role**: Stores workout performance history and calculates progressive overload targets.
@@ -184,7 +195,7 @@ ai-trainer/
 | `POST` | `/api/saved-meals` | Create reusable saved meal template | Bearer JWT | `public.saved_meals` |
 | `DELETE`| `/api/saved-meals/{meal_id}` | Remove saved meal template | Bearer JWT | `public.saved_meals` |
 | `GET` | `/api/badges` | Fetch all badges and user unlock timestamps | Bearer JWT | `public.badges`, `public.user_badges` |
-| `POST` | `/api/ai/parse-food` | Parse natural language food text into macros | Bearer JWT / None | Groq / Nutrition Database |
+| `POST` | `/api/ai/parse-food` | Parse food text: Groq extracts items, macros from local table → USDA → LLM estimate; returns totals + `items[]` | Bearer JWT / None | Groq / Local table / USDA FDC |
 | `POST` | `/api/ai/meal-suggestion` | Synthesize targeted macro recipe (optional `pantry_items`; returns rounded `ingredients`) | None | Groq / Nutrition Database |
 | `POST` | `/api/ai/pantry-planner` | Generate full-day plan from kitchen ingredients | None | Groq / Nutrition Database |
 
@@ -259,6 +270,7 @@ When an error occurs, use this rapid triage matrix to identify and resolve the i
 | **`NameError` or missing package on startup** | `app/main.py` or `requirements.txt` | Missing import statement or uninstalled dependency in virtualenv. | Run `python -c "import app.main"` to view exact missing imports, and run `pip install -r requirements.txt`. |
 | **Weight log fails with `relation "weight_logs" does not exist`** | Supabase | The Phase 2 migration was not re-run after `weight_logs` was added. | Run `schema_phase2.sql` again in the Supabase SQL Editor (safe to re-run). |
 | **Old bookmark like `/workouts` shows the wrong page** | `ai-trainer-web/src/App.jsx` | Pillars moved under `/dashboard/*`. | Legacy paths redirect automatically; update bookmarks to `/dashboard/<section>`. |
+| **Parsed items all show "AI ESTIMATE", never USDA** | `app/services/usda_service.py` | `USDA_API_KEY` missing (DEMO_KEY rate limit hit) or USDA unreachable. | Set `USDA_API_KEY` on the backend host and check logs for `USDA lookup failed`. Parsing still works using local-table and AI estimates. |
 | **AI Food Parsing returns fallback defaults** | `app/services/ai_service.py` | Groq API key missing, request timed out (8s) or returned invalid JSON. Responses carry `"source": "fallback"` when this happens. | Check `GROQ_API_KEY` in `.env` and the server logs for `Groq call failed`. AuraTrainer will safely fallback to its built-in Indian & Global nutritional lookup table without interrupting the user. |
 
 ---
@@ -278,6 +290,7 @@ When an error occurs, use this rapid triage matrix to identify and resolve the i
    - `SUPABASE_SERVICE_KEY`: `your-service-role-key`
    - `GROQ_API_KEY`: `your-groq-key` (LLM for parse-food, pantry-planner and meal-suggestion)
    - `GROQ_MODEL` (optional): defaults to `llama-3.1-8b-instant`; must support JSON mode
+   - `USDA_API_KEY`: free key from https://fdc.nal.usda.gov/api-key-signup (without it the shared `DEMO_KEY` allows only ~30 lookups/hour)
    - `HUGGINGFACE_API_KEY`: `your-hf-key` (still used for vector memory embeddings)
    - `ALLOWED_ORIGINS`: `https://your-frontend-app.vercel.app`
 5. Test: Navigate to `https://your-backend.up.railway.app/health` to receive `{"status": "online"}`.

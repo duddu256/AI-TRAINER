@@ -40,16 +40,26 @@ ROUNDING_RULES = """Rounding rules (mandatory):
 
 JSON_ONLY_RULE = "Respond ONLY with valid JSON matching this exact schema, no prose, no markdown fences:"
 
-PARSE_FOOD_SYSTEM_PROMPT = f"""You are a precision nutrition assistant for AuraTrainer, proficient in Global and Indian foods (Rotis, Dals, Paneer, Soya Chunks, Biryanis, etc.).
-Given a free-text description of food eaten, estimate the total macros.
+PARSE_FOOD_SYSTEM_PROMPT = f"""You are a food-log parser for AuraTrainer, proficient in Global and Indian foods (Rotis, Dals, Paneer, Soya Chunks, Biryanis, etc.).
+Split the user's free-text food log into individual food items. For each item give:
+- name: the food as the user would say it (e.g. "paneer bhurji", "roti")
+- quantity and unit as eaten (e.g. 2 "piece", 150 "g", 1 "bowl", 250 "ml")
+- grams: your best estimate of the item's total edible weight in grams (ml for liquids), e.g. 2 rotis = 80
+- usda_query: a short generic English name for a USDA FoodData Central search, using the closest
+  plain ingredient (e.g. "paneer" -> "cheese paneer", "roti" -> "bread whole wheat", "dal" -> "lentils cooked")
+- estimated_macros: your own estimate for the item's full portion (used only if no database match)
 
 {ROUNDING_RULES}
 
 {JSON_ONLY_RULE}
 {{
-  "parsed_successfully": boolean,
   "inferred_name": string,
-  "macros": {{"calories": number, "protein_g": number, "carbs_g": number, "fat_g": number}}
+  "items": [
+    {{
+      "name": string, "quantity": number, "unit": string, "grams": number, "usda_query": string,
+      "estimated_macros": {{"calories": number, "protein_g": number, "carbs_g": number, "fat_g": number}}
+    }}
+  ]
 }}"""
 
 PANTRY_PLANNER_SYSTEM_PROMPT = f"""You are a precision nutrition assistant for AuraTrainer, proficient in Global and Indian athletic diets.
@@ -376,10 +386,124 @@ def _call_groq_llm(system_prompt: str, user_prompt: str, temperature: float = 0.
         return None
 
 
+# Units that mean "count of pieces" rather than a weight/volume.
+_COUNT_UNITS = {"", "piece", "pieces", "pc", "pcs", "item", "items", "whole", "nos", "no", "unit", "units",
+                "scoop", "scoops", "slice", "slices", "serving", "servings", "egg", "eggs"}
+
+
+def _local_db_match(name: str) -> Optional[Dict[str, Any]]:
+    """Longest FOOD_DATABASE key appearing as whole words in the item name."""
+    lowered = f" {name.lower()} "
+    for key in sorted(FOOD_DATABASE.keys(), key=len, reverse=True):
+        if re.search(r"\b" + re.escape(key) + r"\b", lowered):
+            return FOOD_DATABASE[key]
+    return None
+
+
+def _macros_from_local(entry: Dict[str, Any], quantity: float, unit: str, grams: float) -> Optional[Dict[str, float]]:
+    """Scales a FOOD_DATABASE entry to the eaten portion, or None if the units can't be reconciled."""
+    unit = unit.lower().strip()
+    base = entry["unit"]
+    if base == 1:
+        # Per-piece entry (roti, egg, scoop): needs a count.
+        if unit in _COUNT_UNITS and quantity > 0:
+            multiplier = quantity
+        else:
+            return None
+    elif grams > 0:
+        # Per-100g, per-glass (200/240ml) and per-oz (28g) entries scale by weight.
+        multiplier = grams / float(base)
+    else:
+        return None
+    return {
+        "calories": entry["cals"] * multiplier,
+        "protein_g": entry["p"] * multiplier,
+        "carbs_g": entry["c"] * multiplier,
+        "fat_g": entry["f"] * multiplier,
+    }
+
+
+def _to_float(value: Any) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _resolve_food_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Gives every LLM-extracted item grounded macros, in priority order:
+      1. local_db   - hand-curated Indian & Global table (best for rotis, dals, paneer dishes)
+      2. usda       - USDA FoodData Central per-100g values scaled by the LLM's gram estimate
+      3. llm_estimate - the model's own estimate, only when neither source matches
+    USDA lookups run in parallel so a multi-item log costs one round trip.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    from app.services.usda_service import lookup_per_100g
+
+    prepared = []
+    for raw in items:
+        if not isinstance(raw, dict) or not str(raw.get("name", "")).strip():
+            continue
+        prepared.append({
+            "name": str(raw.get("name")).strip(),
+            "quantity": _to_float(raw.get("quantity")),
+            "unit": str(raw.get("unit", "") or ""),
+            "grams": max(0.0, _to_float(raw.get("grams"))),
+            "usda_query": str(raw.get("usda_query") or raw.get("name")).strip(),
+            "estimate": raw.get("estimated_macros") or {},
+        })
+
+    resolved: List[Optional[Dict[str, float]]] = [None] * len(prepared)
+    sources = [""] * len(prepared)
+    usda_needed = []
+    for i, item in enumerate(prepared):
+        entry = _local_db_match(item["name"])
+        local = _macros_from_local(entry, item["quantity"], item["unit"], item["grams"]) if entry else None
+        if local:
+            resolved[i], sources[i] = local, "local_db"
+        elif item["grams"] > 0:
+            usda_needed.append(i)
+
+    if usda_needed:
+        with ThreadPoolExecutor(max_workers=min(6, len(usda_needed))) as pool:
+            hits = list(pool.map(lambda i: lookup_per_100g(prepared[i]["usda_query"]), usda_needed))
+        for i, hit in zip(usda_needed, hits):
+            if hit:
+                factor = prepared[i]["grams"] / 100.0
+                resolved[i] = {k: hit[k] * factor for k in ("calories", "protein_g", "carbs_g", "fat_g")}
+                resolved[i]["usda_description"] = hit.get("description")
+                sources[i] = "usda"
+
+    out = []
+    for i, item in enumerate(prepared):
+        macros = resolved[i]
+        if macros is None:
+            est = item["estimate"] if isinstance(item["estimate"], dict) else {}
+            macros = {k: _to_float(est.get(k)) for k in ("calories", "protein_g", "carbs_g", "fat_g")}
+            sources[i] = "llm_estimate"
+        shown = _display_ingredient({"name": item["name"], "quantity": item["quantity"], "unit": item["unit"]})
+        out.append({
+            "name": item["name"],
+            "display": shown["display"],
+            "grams": round(item["grams"]),
+            "macro_source": sources[i],
+            "matched_food": macros.get("usda_description"),
+            "calories": round(macros["calories"]),
+            "protein_g": round(macros["protein_g"], 1),
+            "carbs_g": round(macros["carbs_g"], 1),
+            "fat_g": round(macros["fat_g"], 1),
+            # Unrounded values feed the meal totals.
+            "_exact": macros,
+        })
+    return out
+
+
 def parse_food_string(input_text: str) -> Dict[str, Any]:
     """
     Parses unstructured food text (e.g. '3 rotis, 150g paneer bhurji, and 1 bowl dal' or '200g chicken breast with rice')
-    using Groq-hosted LLM with high-precision Indian & Global semantic fallback.
+    using Groq for item extraction, macros grounded in the local food table and USDA FoodData Central,
+    with a fully local semantic fallback when Groq is unavailable.
     """
     cleaned = input_text.strip()
     if not cleaned:
@@ -389,31 +513,35 @@ def parse_food_string(input_text: str) -> Dict[str, Any]:
             "macros": {"calories": 0, "protein_g": 0.0, "carbs_g": 0.0, "fat_g": 0.0}
         }
 
-    # 1. Try Groq LLM (low temperature: parsing should be deterministic)
+    # 1. Groq extracts items & portions; macros come from local DB -> USDA -> LLM estimate.
     try:
-        data = _call_groq_llm(PARSE_FOOD_SYSTEM_PROMPT, f"Calculate macros for: '{cleaned}'", temperature=0.2)
-        if data:
-            if "macros" in data and "calories" in data["macros"]:
-                cal_val = int(data["macros"]["calories"])
-                p_val = round(float(data["macros"].get("protein_g", data["macros"].get("protein", 0))), 1)
-                c_val = round(float(data["macros"].get("carbs_g", data["macros"].get("carbs", 0))), 1)
-                f_val = round(float(data["macros"].get("fat_g", data["macros"].get("fat", 0))), 1)
-                if cal_val > 0 or p_val > 0:
-                    return {
-                        "parsed_successfully": True,
-                        "inferred_name": str(data.get("inferred_name", cleaned[:35])).upper(),
-                        "source": "llm",
+        data = _call_groq_llm(PARSE_FOOD_SYSTEM_PROMPT, f"Food log: '{cleaned}'", temperature=0.2)
+        items = _resolve_food_items(data.get("items") or []) if data else []
+        if items:
+            totals = {k: sum(item["_exact"][k] for item in items) for k in ("calories", "protein_g", "carbs_g", "fat_g")}
+            for item in items:
+                item.pop("_exact", None)
+            cal_val = int(round(totals["calories"]))
+            p_val = round(totals["protein_g"], 1)
+            c_val = round(totals["carbs_g"], 1)
+            f_val = round(totals["fat_g"], 1)
+            if cal_val > 0 or p_val > 0:
+                return {
+                    "parsed_successfully": True,
+                    "inferred_name": str(data.get("inferred_name") or cleaned[:35]).upper(),
+                    "source": "llm",
+                    "items": items,
+                    "calories": cal_val,
+                    "protein_g": p_val,
+                    "carbs_g": c_val,
+                    "fat_g": f_val,
+                    "macros": {
                         "calories": cal_val,
                         "protein_g": p_val,
                         "carbs_g": c_val,
-                        "fat_g": f_val,
-                        "macros": {
-                            "calories": cal_val,
-                            "protein_g": p_val,
-                            "carbs_g": c_val,
-                            "fat_g": f_val
-                        }
+                        "fat_g": f_val
                     }
+                }
     except Exception as llm_err:
         logger.warning(f"[parse_food_string] LLM response rejected, using fallback: {llm_err}")
 

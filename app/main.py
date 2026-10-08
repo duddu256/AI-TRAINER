@@ -439,7 +439,7 @@ async def delete_saved_meal_endpoint(
 # --- AI NATURAL LANGUAGE FOOD PARSER & PANTRY (MODULE 1 & 4) ---
 
 @app.post("/api/ai/parse-food")
-async def parse_food_endpoint(payload: ParseFoodRequest):
+def parse_food_endpoint(payload: ParseFoodRequest):
     """
     Module 1: Parses natural language food text string into structured macro breakdown.
     """
@@ -447,7 +447,7 @@ async def parse_food_endpoint(payload: ParseFoodRequest):
     return result
 
 @app.post("/api/ai/pantry-planner")
-async def pantry_planner_endpoint(payload: PantryPlannerRequest):
+def pantry_planner_endpoint(payload: PantryPlannerRequest):
     """
     Module 4: Full-day nutrition protocol planner based on kitchen inventory and remaining macros.
     """
@@ -705,7 +705,7 @@ async def get_weight_history(limit: int = 90, current_user = Depends(get_current
 # --- AI RECIPES ENGINE ---
 
 @app.post("/api/ai/meal-suggestion")
-async def suggest_meal(request: MealSuggestionRequest):
+def suggest_meal(request: MealSuggestionRequest):
     """
     Processes user remaining targets and custom prompt to synthesize a high-precision anabolic recipe.
     """
