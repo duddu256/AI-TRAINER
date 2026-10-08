@@ -161,6 +161,20 @@ export const api = {
     return res.json();
   },
 
+  deleteLoggedMeal: async (mealId, date, index) => {
+    const params = new URLSearchParams({ date });
+    if (index !== undefined && index !== null) params.set("index", String(index));
+    const res = await authFetch(
+      `${API_BASE_URL}/api/logs/meals/${encodeURIComponent(mealId)}?${params.toString()}`,
+      { method: "DELETE" }
+    );
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || "Failed to delete logged meal");
+    }
+    return res.json();
+  },
+
   // 4. Workout Engine & Vector Progressive Overload (Module 2)
   getWorkoutsBySplit: async (splitName) => {
     const res = await authFetch(

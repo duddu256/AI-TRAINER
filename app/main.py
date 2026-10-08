@@ -1,4 +1,5 @@
 import os
+import uuid
 from fastapi import FastAPI, HTTPException, Depends, status, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -516,7 +517,7 @@ async def log_meal(meal_data: MealLog, current_user = Depends(get_current_user))
         if not res.data:
             current_meals = []
             new_meal = meal_data.model_dump()
-            new_meal["id"] = f"m_{len(current_meals) + 1}"
+            new_meal["id"] = f"m_{uuid.uuid4().hex[:12]}"
             new_meal["date"] = str(new_meal["date"])
             current_meals.append(new_meal)
             
@@ -541,7 +542,7 @@ async def log_meal(meal_data: MealLog, current_user = Depends(get_current_user))
             current_meals = first_row.get("meals", []) or []
             
             new_meal = meal_data.model_dump()
-            new_meal["id"] = f"m_{len(current_meals) + 1}"
+            new_meal["id"] = f"m_{uuid.uuid4().hex[:12]}"
             new_meal["date"] = str(new_meal["date"])
             current_meals.append(new_meal)
             
@@ -556,6 +557,37 @@ async def log_meal(meal_data: MealLog, current_user = Depends(get_current_user))
             "data": saved_data,
             "newly_unlocked_badges": newly_unlocked
         }
+    except Exception as e:
+        raise handle_db_or_auth_error(e, status.HTTP_400_BAD_REQUEST)
+
+@app.delete("/api/logs/meals/{meal_id}")
+async def delete_logged_meal(
+    meal_id: str,
+    date: date_type,
+    index: Optional[int] = None,
+    current_user = Depends(get_current_user)
+):
+    """
+    Removes one logged meal from a day's log. `index` pins the exact row, since meals logged
+    before ids became unique can share an id; it must still match `meal_id`.
+    """
+    date_str = str(date)
+    try:
+        res = supabase_db.table("daily_logs").select("meals").eq("user_id", current_user.id).eq("date", date_str).execute()
+        current_meals = (next(iter(res.data), {}) or {}).get("meals", []) or []
+
+        if index is not None and 0 <= index < len(current_meals) and current_meals[index].get("id") == meal_id:
+            target_idx = index
+        else:
+            target_idx = next((i for i, m in enumerate(current_meals) if m.get("id") == meal_id), None)
+        if target_idx is None:
+            raise HTTPException(status_code=404, detail="Meal not found in this day's log.")
+
+        current_meals.pop(target_idx)
+        update_res = supabase_db.table("daily_logs").update({"meals": current_meals}).eq("user_id", current_user.id).eq("date", date_str).execute()
+        return {"status": "Meal removed!", "data": next(iter(update_res.data), {})}
+    except HTTPException:
+        raise
     except Exception as e:
         raise handle_db_or_auth_error(e, status.HTTP_400_BAD_REQUEST)
 

@@ -1,10 +1,12 @@
 import React, { useState } from "react";
+import { Eye, EyeOff } from "lucide-react";
 import { api } from "../services/api";
 
 export default function LoginRegister({ onAuthSuccess }) {
   const [isLogin, setIsLogin] = useState(true);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [stayLoggedIn, setStayLoggedIn] = useState(true);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -130,14 +132,25 @@ export default function LoginRegister({ onAuthSuccess }) {
             <label className="block text-slate-400 text-[10px] font-black tracking-[0.2em] uppercase mb-2">
               SECRET PASSCODE
             </label>
-            <input
-              type="password"
-              required
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="w-full px-5 py-4 bg-black border border-slate-900 rounded-2xl text-slate-100 placeholder-slate-700 font-medium focus:outline-none focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400 transition-all text-sm"
-              placeholder="••••••••••••"
-            />
+            <div className="relative">
+              <input
+                type={showPassword ? "text" : "password"}
+                required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full pl-5 pr-14 py-4 bg-black border border-slate-900 rounded-2xl text-slate-100 placeholder-slate-700 font-medium focus:outline-none focus:border-cyan-400 focus:ring-1 focus:ring-cyan-400 transition-all text-sm"
+                placeholder="••••••••••••"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword((prev) => !prev)}
+                aria-label={showPassword ? "Hide password" : "Show password"}
+                aria-pressed={showPassword}
+                className="absolute inset-y-0 right-0 flex items-center px-4 text-slate-500 hover:text-cyan-400 transition-colors cursor-pointer"
+              >
+                {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+              </button>
+            </div>
           </div>
 
           {/* Stay Logged In Toggle */}

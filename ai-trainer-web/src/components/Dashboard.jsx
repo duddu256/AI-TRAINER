@@ -86,6 +86,8 @@ export default function Dashboard({ onLogout }) {
   const [mealCarbs, setMealCarbs] = useState("");
   const [mealFat, setMealFat] = useState("");
   const [mealSubmitting, setMealSubmitting] = useState(false);
+  const [pendingMealDelete, setPendingMealDelete] = useState(null); // index of meal awaiting confirm
+  const [deletingMeal, setDeletingMeal] = useState(false);
 
   // AI Tab State & Pantry Full-Day Planner (Module 4 - Indian & Global Standards)
   const [activeAiTab, setActiveAiTab] = useState("STRATEGIST"); // 'STRATEGIST' | 'PANTRY'
@@ -146,6 +148,7 @@ export default function Dashboard({ onLogout }) {
   }, []);
 
   useEffect(() => {
+    setPendingMealDelete(null);
     loadDashboardData(date);
   }, [date, loadDashboardData]);
 
@@ -473,6 +476,20 @@ export default function Dashboard({ onLogout }) {
       await loadDashboardData(date);
     } catch (err) {
       console.error("Failed to log saved meal:", err);
+    }
+  };
+
+  const handleDeleteLoggedMeal = async (meal, idx) => {
+    setDeletingMeal(true);
+    try {
+      await api.deleteLoggedMeal(meal.id, date, idx);
+      setPendingMealDelete(null);
+      await loadDashboardData(date);
+    } catch (err) {
+      console.error("Failed to delete logged meal:", err);
+      setError("FAILED TO REMOVE LOGGED MEAL.");
+    } finally {
+      setDeletingMeal(false);
     }
   };
 
@@ -1508,9 +1525,41 @@ export default function Dashboard({ onLogout }) {
                         <span className="text-slate-500 font-semibold">{meal.logged_at}</span>
                       </div>
                     </div>
-                    <div className="text-right">
-                      <span className="text-lg font-black tracking-tight text-white font-stats">{meal.calories}</span>
-                      <span className="text-[9px] font-black tracking-widest text-slate-500 block uppercase">KCAL</span>
+                    <div className="flex items-center gap-3">
+                      <div className="text-right">
+                        <span className="text-lg font-black tracking-tight text-white font-stats">{meal.calories}</span>
+                        <span className="text-[9px] font-black tracking-widest text-slate-500 block uppercase">KCAL</span>
+                      </div>
+                      {meal.id && (pendingMealDelete === idx ? (
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteLoggedMeal(meal, idx)}
+                            disabled={deletingMeal}
+                            className="px-2.5 py-1.5 rounded-lg bg-red-500/15 border border-red-500/40 text-red-400 hover:bg-red-500/25 text-[9px] font-black tracking-widest uppercase transition cursor-pointer disabled:opacity-50"
+                          >
+                            {deletingMeal ? "..." : "REMOVE"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setPendingMealDelete(null)}
+                            disabled={deletingMeal}
+                            className="px-2.5 py-1.5 rounded-lg border border-white/10 text-slate-400 hover:text-white text-[9px] font-black tracking-widest uppercase transition cursor-pointer disabled:opacity-50"
+                          >
+                            KEEP
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setPendingMealDelete(idx)}
+                          className="w-7 h-7 rounded-lg text-slate-500 hover:text-red-400 hover:bg-red-500/10 text-base flex items-center justify-center transition cursor-pointer"
+                          title="Remove logged meal"
+                          aria-label={`Remove ${meal.name}`}
+                        >
+                          ×
+                        </button>
+                      ))}
                     </div>
                   </div>
                 ))}
